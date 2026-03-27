@@ -24,6 +24,12 @@ type AdminAppointment = {
 
 type ApiAppointment = Record<string, unknown>;
 
+type AdminServiceOption = {
+  id: string;
+  name: string;
+  durationMinutes?: number;
+};
+
 type BlockedSlotType = 'vacation' | 'holiday' | 'maintenance' | 'personal' | 'other';
 
 type BlockedSlot = {
@@ -65,6 +71,7 @@ const initialAdminAppointments: AdminAppointment[] = [];
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 const appointmentsUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/appointments`;
+const servicesUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/services`;
 const blockedSlotsUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/blocked-slots`;
 const giftCardsUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/gift-cards`;
 
@@ -75,6 +82,18 @@ const BLOCKED_SLOT_TYPES: { value: BlockedSlotType; label: string }[] = [
   { value: 'personal', label: 'Personal' },
   { value: 'other', label: 'Otro' },
 ];
+
+const CALENDAR_WEEK_DAYS = [
+  { label: 'Lun', dayIndex: 1 },
+  { label: 'Mar', dayIndex: 2 },
+  { label: 'Mie', dayIndex: 3 },
+  { label: 'Jue', dayIndex: 4 },
+  { label: 'Vie', dayIndex: 5 },
+  { label: 'Sab', dayIndex: 6 },
+  { label: 'Dom', dayIndex: 0 },
+] as const;
+
+const DARKER_PINK_WEEKDAYS = new Set([1, 2, 4, 5]); // Lun, Mar, Jue, Vie
 
 const statusChipSx = (status: AdminStatus) => {
   switch (status) {
@@ -327,15 +346,21 @@ function AdminDashboardContent() {
   const [sortBy, setSortBy] = useState<'date-asc' | 'date-desc' | 'name-asc'>('date-asc');
   const [createOpen, setCreateOpen] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createValues, setCreateValues] = useState({
     clientName: '',
-    service: '',
+    serviceId: '',
+    patientEmail: '',
+    patientPhone: '',
     date: '',
     time: '',
     location: 'Rosario',
     status: 'Confirmado' as AdminStatus,
     durationMinutes: '30',
   });
+  const [services, setServices] = useState<AdminServiceOption[]>([]);
+  const [servicesLoading, setServicesLoading] = useState(false);
+  const [servicesError, setServicesError] = useState<string | null>(null);
   const [blockedSlots, setBlockedSlots] = useState<BlockedSlot[]>([]);
   const [blockedSlotsLoading, setBlockedSlotsLoading] = useState(false);
   const [blockedSlotsError, setBlockedSlotsError] = useState<string | null>(null);
@@ -385,7 +410,6 @@ function AdminDashboardContent() {
       canceled: appointments.filter((appt) => appt.status === 'Cancelado').length,
     };
   }, [appointments]);
-
   const monthStart = useMemo(() => {
     const base = new Date();
     const start = new Date(base.getFullYear(), base.getMonth() + monthOffset, 1);
@@ -921,6 +945,71 @@ function AdminDashboardContent() {
   );
 
   useEffect(() => {
+    let mounted = true;
+    const controller = new AbortController();
+
+    const loadServices = async () => {
+      if (!servicesUrl) {
+        setServices([]);
+        setServicesError('Falta configurar NEXT_PUBLIC_API_BASE_URL.');
+        return;
+      }
+      setServicesLoading(true);
+      setServicesError(null);
+      try {
+        const response = await fetch(servicesUrl, { signal: controller.signal });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const rawText = await response.text();
+        let parsed: unknown = rawText;
+        try {
+          parsed = JSON.parse(rawText);
+        } catch {
+          parsed = rawText;
+        }
+        const list = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray((parsed as { data?: unknown }).data)
+            ? ((parsed as { data?: unknown }).data as unknown[])
+            : [];
+        const normalized = list
+          .map((item) => {
+            const rawDuration = Number((item as { durationMinutes?: number | string }).durationMinutes ?? 30);
+            return {
+              id: String((item as { id?: string }).id ?? ''),
+              name: String((item as { name?: string }).name ?? 'Servicio'),
+              durationMinutes: Number.isFinite(rawDuration) && rawDuration > 0 ? rawDuration : 30,
+            };
+          })
+          .filter((item) => item.id);
+        if (!controller.signal.aborted && mounted) {
+          setServices(normalized);
+          if (normalized.length === 0) {
+            setServicesError('No hay servicios disponibles para agendar turnos.');
+          }
+        }
+      } catch {
+        if (!controller.signal.aborted && mounted) {
+          setServices([]);
+          setServicesError('No se pudieron cargar los servicios.');
+        }
+      } finally {
+        if (!controller.signal.aborted && mounted) {
+          setServicesLoading(false);
+        }
+      }
+    };
+
+    loadServices();
+
+    return () => {
+      mounted = false;
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
     const controller = new AbortController();
     loadAppointments(controller.signal);
     return () => controller.abort();
@@ -1133,70 +1222,166 @@ function AdminDashboardContent() {
     const dateIso = toIsoDate(selectedDate);
     const firstFreeTime =
       timeSlots.find((time) => !getAppointmentForSlot(selectedDate, time) && !isSlotBlocked(selectedDate, time)) ?? '09:00';
+    const defaultService = services[0];
     setCreateValues({
       clientName: '',
-      service: '',
+      serviceId: defaultService?.id ?? '',
+      patientEmail: '',
+      patientPhone: '',
       date: dateIso,
       time: firstFreeTime,
       location: 'Rosario',
       status: 'Confirmado',
-      durationMinutes: '30',
+      durationMinutes: String(defaultService?.durationMinutes ?? 30),
     });
     setCreateError(null);
+    setCreateSubmitting(false);
     setCreateOpen(true);
   };
 
   const handleOpenCreateFromSlot = (date: Date, time: string) => {
     const dateIso = toIsoDate(date);
+    const defaultService = services[0];
     setCreateValues({
       clientName: '',
-      service: '',
+      serviceId: defaultService?.id ?? '',
+      patientEmail: '',
+      patientPhone: '',
       date: dateIso,
       time,
       location: 'Rosario',
       status: 'Confirmado',
-      durationMinutes: '30',
+      durationMinutes: String(defaultService?.durationMinutes ?? 30),
     });
     setCreateError(null);
+    setCreateSubmitting(false);
     setCreateOpen(true);
   };
 
-  const handleConfirmCreate = () => {
+  const handleConfirmCreate = async () => {
+    const extractApiErrorMessage = (payload: unknown, fallback: string) => {
+      if (typeof payload === 'string' && payload.trim()) {
+        return payload;
+      }
+      if (payload && typeof payload === 'object') {
+        const message = (payload as { message?: unknown }).message;
+        if (typeof message === 'string' && message.trim()) {
+          return message;
+        }
+        if (Array.isArray(message) && message.length > 0) {
+          return message.map((item) => String(item)).join(' | ');
+        }
+        const error = (payload as { error?: unknown }).error;
+        if (typeof error === 'string' && error.trim()) {
+          return error;
+        }
+      }
+      return fallback;
+    };
+
     setCreateError(null);
     const trimmedName = createValues.clientName.trim();
-    const trimmedService = createValues.service.trim();
-    if (!trimmedName || !trimmedService || !createValues.date || !createValues.time) {
+    const trimmedEmail = createValues.patientEmail.trim();
+    const trimmedPhone = createValues.patientPhone.trim();
+    const phoneDigits = trimmedPhone.replace(/\D/g, '');
+    if (!trimmedName || !createValues.serviceId || !createValues.date || !createValues.time || !trimmedEmail || !trimmedPhone) {
       setCreateError('Completa todos los campos obligatorios.');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmedEmail)) {
+      setCreateError('Ingresa un email valido.');
+      return;
+    }
+    if (phoneDigits.length < 8) {
+      setCreateError('Ingresa un telefono valido.');
       return;
     }
     const parsedDate = parseIsoDate(createValues.date);
     if (!parsedDate) {
-      setCreateError('Fecha inválida.');
+      setCreateError('Fecha invalida.');
       return;
     }
     if (isSlotBlocked(parsedDate, createValues.time)) {
-      setCreateError('El horario seleccionado está bloqueado.');
+      setCreateError('El horario seleccionado esta bloqueado.');
       return;
     }
     const occupied = getAppointmentForSlot(parsedDate, createValues.time);
     if (occupied) {
-      setCreateError('Ese horario ya está ocupado.');
+      setCreateError('Ese horario ya esta ocupado.');
       return;
     }
-    const duration = Number(createValues.durationMinutes);
-    const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 30;
-    const newAppointment: AdminAppointment = {
-      id: `local-${Date.now()}`,
-      clientName: trimmedName,
-      service: trimmedService,
-      date: createValues.date,
-      time: createValues.time,
-      durationMinutes: safeDuration,
-      location: createValues.location || 'Rosario',
-      status: createValues.status,
-    };
-    setAppointments((prev) => [...prev, newAppointment]);
-    setCreateOpen(false);
+
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('turnera_access_token') : null;
+      if (!token) {
+        setCreateError('Necesitas iniciar sesion como admin para crear un turno.');
+        return;
+      }
+
+      setCreateSubmitting(true);
+      const notesParts: string[] = [];
+      if (createValues.location.trim()) {
+        notesParts.push('Sede: ' + createValues.location.trim());
+      }
+
+      const createResponse = await fetch(appointmentsUrl + '/admin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer ' + token,
+        },
+        body: JSON.stringify({
+          serviceId: createValues.serviceId,
+          appointmentDate: createValues.date,
+          appointmentTime: createValues.time,
+          patientName: trimmedName,
+          patientPhone: trimmedPhone,
+          patientEmail: trimmedEmail,
+          patientNotes: notesParts.length > 0 ? notesParts.join(' | ') : undefined,
+        }),
+      });
+      const createRawText = await createResponse.text();
+      let createParsed: unknown = createRawText;
+      try {
+        createParsed = JSON.parse(createRawText);
+      } catch {
+        createParsed = createRawText;
+      }
+
+      if (!createResponse.ok) {
+        setCreateError(
+          extractApiErrorMessage(
+            createParsed,
+            'No se pudo crear el turno (HTTP ' + createResponse.status + ').'
+          )
+        );
+        return;
+      }
+
+      const createdId = String((createParsed as { id?: string }).id ?? '').trim();
+      if (createdId && createValues.status !== 'Confirmado') {
+        const patchResponse = await fetch(appointmentsUrl + '/' + createdId, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + token,
+          },
+          body: JSON.stringify({
+            status: toApiStatus(createValues.status),
+          }),
+        });
+        if (!patchResponse.ok) {
+          setError('El turno se creo, pero no se pudo actualizar el estado seleccionado.');
+        }
+      }
+
+      await loadAppointments();
+      setCreateOpen(false);
+    } catch {
+      setCreateError('No se pudo crear el turno. Intenta nuevamente.');
+    } finally {
+      setCreateSubmitting(false);
+    }
   };
 
   const refreshBlockedSlots = async () => {
@@ -2492,12 +2677,18 @@ function AdminDashboardContent() {
                           display: 'grid',
                           gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
                           borderBottom: '1px solid #F0DEDE',
-                          backgroundColor: '#FFF5F7',
                         }}
                       >
-                        {['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'].map((label) => (
-                          <Box key={label} sx={{ p: 1.5, textAlign: 'center' }}>
-                            <Typography sx={{ fontWeight: 700, color: '#8B6B6B' }}>{label}</Typography>
+                        {CALENDAR_WEEK_DAYS.map((item) => (
+                          <Box
+                            key={item.label}
+                            sx={{
+                              p: 1.5,
+                              textAlign: 'center',
+                              backgroundColor: DARKER_PINK_WEEKDAYS.has(item.dayIndex) ? '#F1DEE6' : '#FFF5F7',
+                            }}
+                          >
+                            <Typography sx={{ fontWeight: 700, color: '#8B6B6B' }}>{item.label}</Typography>
                           </Box>
                         ))}
                       </Box>
@@ -2508,6 +2699,7 @@ function AdminDashboardContent() {
                           const occupiedSlots = timeSlots.filter((slot) => getAppointmentForSlot(day, slot)).length;
                           const isInMonth = isSameMonth(day, monthStart);
                           const isSelected = isSameDay(day, selectedDate);
+                          const isDarkerPinkWeekday = DARKER_PINK_WEEKDAYS.has(day.getDay());
                           const dayBlocks = getBlockedSlotsForDate(day);
                           const isFullyBlocked = dayBlocks.some((block) => !block.startTime || !block.endTime);
                           const hasPartialBlock = !isFullyBlocked && dayBlocks.length > 0;
@@ -2520,12 +2712,28 @@ function AdminDashboardContent() {
                                 p: 1.5,
                                 borderBottom: '1px solid #F5E6E8',
                                 borderLeft: '1px solid #F5E6E8',
-                                backgroundColor: isSelected ? '#F9E7EC' : isFullyBlocked ? '#FFF1F4' : hasPartialBlock ? '#FFF8F0' : '#FFFFFF',
+                                backgroundColor: isSelected
+                                  ? '#F9E7EC'
+                                  : isFullyBlocked
+                                    ? '#FFF1F4'
+                                    : hasPartialBlock
+                                      ? '#FFF8F0'
+                                      : isDarkerPinkWeekday
+                                        ? '#FBEAF0'
+                                        : '#FFFFFF',
                                 opacity: isInMonth ? 1 : 0.4,
                                 cursor: 'pointer',
                                 transition: 'background-color 0.2s ease',
                                 '&:hover': {
-                                  backgroundColor: isSelected ? '#F9E7EC' : isFullyBlocked ? '#FFE9EE' : hasPartialBlock ? '#FFF1E6' : '#FFF5F7',
+                                  backgroundColor: isSelected
+                                    ? '#F9E7EC'
+                                    : isFullyBlocked
+                                      ? '#FFE9EE'
+                                      : hasPartialBlock
+                                        ? '#FFF1E6'
+                                        : isDarkerPinkWeekday
+                                          ? '#F6E2EA'
+                                          : '#FFF5F7',
                                 },
                               }}
                             >
@@ -2835,13 +3043,54 @@ function AdminDashboardContent() {
               setCreateValues((prev) => ({ ...prev, clientName: event.target.value }))
             }
           />
-          <TextField
-            label="Servicio"
-            value={createValues.service}
-            onChange={(event) =>
-              setCreateValues((prev) => ({ ...prev, service: event.target.value }))
-            }
-          />
+          {services.length <= 1 ? (
+            <TextField
+              label="Servicio"
+              value={services[0]?.name ?? 'Sin servicios disponibles'}
+              disabled
+              helperText={servicesError ?? (servicesLoading ? 'Cargando servicios...' : undefined)}
+            />
+          ) : (
+            <TextField
+              select
+              label="Servicio"
+              value={createValues.serviceId}
+              onChange={(event) => {
+                const nextServiceId = event.target.value;
+                const matched = services.find((service) => service.id === nextServiceId);
+                setCreateValues((prev) => ({
+                  ...prev,
+                  serviceId: nextServiceId,
+                  durationMinutes: matched?.durationMinutes ? String(matched.durationMinutes) : prev.durationMinutes,
+                }));
+              }}
+              disabled={servicesLoading || services.length === 0}
+              helperText={servicesError ?? (servicesLoading ? 'Cargando servicios...' : undefined)}
+            >
+              {services.map((service) => (
+                <MenuItem key={service.id} value={service.id}>
+                  {service.name}
+                </MenuItem>
+              ))}
+            </TextField>
+          )}
+          <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' } }}>
+            <TextField
+              label="Telefono del paciente"
+              value={createValues.patientPhone}
+              onChange={(event) =>
+                setCreateValues((prev) => ({ ...prev, patientPhone: event.target.value }))
+              }
+            />
+            <TextField
+              label="Email del paciente"
+              type="email"
+              value={createValues.patientEmail}
+              onChange={(event) =>
+                setCreateValues((prev) => ({ ...prev, patientEmail: event.target.value }))
+              }
+            />
+          </Box>
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' } }}>
             <TextField
               label="Fecha"
@@ -2903,8 +3152,12 @@ function AdminDashboardContent() {
         </DialogContent>
         <DialogActions sx={{ p: 3, gap: 1 }}>
           <Button onClick={() => setCreateOpen(false)}>Cancelar</Button>
-          <Button variant="contained" onClick={handleConfirmCreate}>
-            Agendar
+          <Button
+            variant="contained"
+            onClick={handleConfirmCreate}
+            disabled={createSubmitting || servicesLoading || services.length === 0}
+          >
+            {createSubmitting ? 'Agendando...' : 'Agendar'}
           </Button>
         </DialogActions>
       </Dialog>

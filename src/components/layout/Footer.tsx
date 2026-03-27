@@ -17,7 +17,11 @@ export function Footer() {
   const currentYear = new Date().getFullYear();
 
   const socialLinks = [
-    { icon: InstagramIcon, href: 'https://www.instagram.com/dra.jaquelinagrassetti', label: 'Instagram' },
+    {
+      icon: InstagramIcon,
+      href: 'https://www.instagram.com/dra.jaquelinagrassetti',
+      label: 'Instagram',
+    },
     { icon: WhatsAppIcon, href: 'https://wa.me/543417511529', label: 'WhatsApp' },
   ];
 
@@ -52,17 +56,18 @@ export function Footer() {
                 flexWrap: 'wrap',
               }}
             >
-              <Typography
+              <Box
+                component="img"
+                src="/LG.png"
+                alt="Logo JG"
                 sx={{
-                  fontFamily: '"Cormorant Garamond", serif',
-                  fontWeight: 600,
-                  letterSpacing: '3px',
-                  fontSize: { xs: '1.5rem', md: '1.75rem' },
-                  color: '#D4A5A5',
+                  width: { xs: 30, md: 38 },
+                  height: { xs: 30, md: 38 },
+                  objectFit: 'contain',
+                  display: 'block',
+                  flexShrink: 0,
                 }}
-              >
-                JG
-              </Typography>
+              />
               <Box
                 aria-hidden="true"
                 sx={{
@@ -85,7 +90,7 @@ export function Footer() {
               </Typography>
             </Box>
             <Typography variant="body2" sx={{ color: '#7A7A7A', mb: 3 }}>
-              Consultorio Medico Estetico de excelencia. Tratamientos profesionales con resultados garantizados.
+              Consultorio Medico Estetico de excelencia.
             </Typography>
           </Box>
 
@@ -184,7 +189,6 @@ export function Footer() {
               </MuiLink>
             </Box>
           </Box>
-
         </Box>
 
         <Box
