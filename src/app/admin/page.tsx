@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Card, CardContent, Chip, CircularProgress, Container, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, MenuItem, Pagination, Skeleton, Stack, Switch, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography } from '@mui/material';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -40,6 +40,17 @@ type BlockedSlot = {
   type?: BlockedSlotType | string;
   reason?: string | null;
   isActive?: boolean;
+};
+
+type BlockedDayGroup = {
+  blockedDate: string;
+  ids: string[];
+  isFullDay: boolean;
+  slotCount: number;
+  firstStartTime?: string | null;
+  firstEndTime?: string | null;
+  type?: BlockedSlotType | string;
+  reason?: string | null;
 };
 
 type ApiBlockedSlot = Record<string, unknown>;
@@ -145,6 +156,10 @@ const toApiStatus = (status: AdminStatus) => {
   }
 };
 
+const formatAdminStatusLabel = (status: AdminStatus) => {
+  return status === 'No asistio' ? 'No asistió' : status;
+};
+
 const resolveDateTime = (raw: ApiAppointment) => {
   const rawDate = (raw.appointmentDate as string | undefined) ?? (raw.date as string | undefined) ?? (raw.start as string | undefined) ?? (raw.datetime as string | undefined) ?? (raw.dateTime as string | undefined);
 
@@ -215,6 +230,35 @@ const normalizeBlockedSlot = (raw: ApiBlockedSlot, index: number): BlockedSlot =
   };
 };
 
+const dedupeBlockedSlots = (slots: BlockedSlot[]) => {
+  const seen = new Map<string, BlockedSlot>();
+  for (const slot of slots) {
+    if (!slot.blockedDate || slot.isActive === false) continue;
+    const start = slot.startTime ?? '';
+    const end = slot.endTime ?? '';
+    const timeKey = !start && !end ? 'all-day' : `${start}-${end}`;
+    const key = `${slot.blockedDate}|${timeKey}`;
+    if (!seen.has(key)) {
+      seen.set(key, slot);
+    }
+  }
+  return Array.from(seen.values());
+};
+
+const parseBlockedSlotsPayload = (payload: unknown): BlockedSlot[] => {
+  const payloadObject = payload as { data?: unknown; id?: unknown };
+  const list = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payloadObject?.data)
+      ? (payloadObject.data as unknown[])
+      : payload && typeof payload === 'object' && payloadObject.id
+        ? [payload]
+        : [];
+  return list
+    .map((item, index) => normalizeBlockedSlot(item as ApiBlockedSlot, index))
+    .filter((slot) => slot.blockedDate);
+};
+
 const parseMoneyValue = (value: unknown) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string') {
@@ -280,16 +324,16 @@ const formatCurrency = (value: number) =>
   }).format(value);
 
 const formatGiftCardDate = (value?: string) => {
-  if (!value) return '—';
+  if (!value) return 'â€”';
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '—';
+  if (Number.isNaN(parsed.getTime())) return 'â€”';
   return parsed.toLocaleDateString('es-AR');
 };
 
 const formatTestimonialDate = (value?: string | null) => {
-  if (!value) return '—';
+  if (!value) return 'â€”';
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '—';
+  if (Number.isNaN(parsed.getTime())) return 'â€”';
   return parsed.toLocaleDateString('es-AR');
 };
 
@@ -396,10 +440,12 @@ function AdminDashboardContent() {
   const [giftCardPage, setGiftCardPage] = useState(1);
   const [testimonialPage, setTestimonialPage] = useState(1);
   const [appointmentPage, setAppointmentPage] = useState(1);
+  const [blockedSlotsPage, setBlockedSlotsPage] = useState(1);
 
   const GIFT_CARDS_PAGE_SIZE = 6;
   const TESTIMONIALS_PAGE_SIZE = 6;
   const APPOINTMENTS_PAGE_SIZE = 8;
+  const BLOCKED_SLOTS_PAGE_SIZE = 5;
   const AUTO_REFRESH_MS = 60000;
 
   const stats = useMemo(() => {
@@ -428,13 +474,6 @@ function AdminDashboardContent() {
     return start;
   }, [monthStart]);
 
-  const monthGridEnd = useMemo(() => {
-    const end = new Date(monthGridStart);
-    end.setDate(end.getDate() + 41);
-    end.setHours(0, 0, 0, 0);
-    return end;
-  }, [monthGridStart]);
-
   const monthDays = useMemo(() => {
     return Array.from({ length: 42 }).map((_, index) => {
       const day = new Date(monthGridStart);
@@ -460,11 +499,7 @@ function AdminDashboardContent() {
       setBlockedSlotsLoading(true);
       setBlockedSlotsError(null);
       try {
-        const startDate = monthGridStart.toISOString().slice(0, 10);
-        const endDate = monthGridEnd.toISOString().slice(0, 10);
         const query = new URLSearchParams({
-          startDate,
-          endDate,
           isActive: 'true',
         }).toString();
         const response = await fetch(`${blockedSlotsUrl}?${query}`, { signal });
@@ -478,16 +513,9 @@ function AdminDashboardContent() {
         } catch {
           parsed = rawText;
         }
-        const list = Array.isArray(parsed)
-          ? parsed
-          : Array.isArray((parsed as { data?: unknown }).data)
-            ? ((parsed as { data?: unknown }).data as unknown[])
-            : [];
-        const normalized = list
-          .map((item, index) => normalizeBlockedSlot(item as ApiBlockedSlot, index))
-          .filter((slot) => slot.blockedDate);
+        const normalized = parseBlockedSlotsPayload(parsed);
         if (!signal?.aborted) {
-          setBlockedSlots(normalized);
+          setBlockedSlots(dedupeBlockedSlots(normalized));
         }
       } catch {
         if (!signal?.aborted) {
@@ -498,7 +526,7 @@ function AdminDashboardContent() {
         if (!signal?.aborted) setBlockedSlotsLoading(false);
       }
     },
-    [blockedSlotsUrl, monthGridEnd, monthGridStart]
+    [blockedSlotsUrl]
   );
 
   useEffect(() => {
@@ -710,6 +738,46 @@ function AdminDashboardContent() {
     });
     return sorted;
   }, [blockedSlots]);
+  const blockedDaysList = useMemo(() => {
+    const grouped = new Map<string, BlockedDayGroup>();
+
+    for (const slot of blockedSlotsList) {
+      const isFullDay = !slot.startTime || !slot.endTime;
+      const existing = grouped.get(slot.blockedDate);
+
+      if (!existing) {
+        grouped.set(slot.blockedDate, {
+          blockedDate: slot.blockedDate,
+          ids: [slot.id],
+          isFullDay,
+          slotCount: 1,
+          firstStartTime: slot.startTime ?? null,
+          firstEndTime: slot.endTime ?? null,
+          type: slot.type,
+          reason: slot.reason ?? null,
+        });
+        continue;
+      }
+
+      existing.ids.push(slot.id);
+      existing.slotCount += 1;
+      existing.isFullDay = existing.isFullDay || isFullDay;
+      if (!existing.type && slot.type) existing.type = slot.type;
+      if (!existing.reason && slot.reason) existing.reason = slot.reason;
+    }
+
+    return Array.from(grouped.values()).sort((a, b) =>
+      a.blockedDate.localeCompare(b.blockedDate)
+    );
+  }, [blockedSlotsList]);
+  const blockedSlotsPageCount = useMemo(
+    () => Math.max(1, Math.ceil(blockedDaysList.length / BLOCKED_SLOTS_PAGE_SIZE)),
+    [blockedDaysList.length, BLOCKED_SLOTS_PAGE_SIZE]
+  );
+  const paginatedBlockedSlots = useMemo(() => {
+    const start = (blockedSlotsPage - 1) * BLOCKED_SLOTS_PAGE_SIZE;
+    return blockedDaysList.slice(start, start + BLOCKED_SLOTS_PAGE_SIZE);
+  }, [blockedDaysList, blockedSlotsPage, BLOCKED_SLOTS_PAGE_SIZE]);
 
   const todayAppointments = useMemo(() => appointments.filter((appt) => appt.date === todayKey), [appointments, todayKey]);
 
@@ -752,6 +820,12 @@ function AdminDashboardContent() {
       setTestimonialPage(testimonialPageCount);
     }
   }, [testimonialPage, testimonialPageCount]);
+
+  useEffect(() => {
+    if (blockedSlotsPage > blockedSlotsPageCount) {
+      setBlockedSlotsPage(blockedSlotsPageCount);
+    }
+  }, [blockedSlotsPage, blockedSlotsPageCount]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1088,7 +1162,7 @@ function AdminDashboardContent() {
       }
       const payload = reason?.trim()
         ? { cancellationReason: reason.trim() }
-        : { cancellationReason: 'Cancelado por administracion' };
+        : { cancellationReason: 'Cancelado por administración' };
       const response = await fetch(`${appointmentsUrl}/${id}/cancel`, {
         method: 'POST',
         headers: {
@@ -1298,7 +1372,7 @@ function AdminDashboardContent() {
     }
     const parsedDate = parseIsoDate(createValues.date);
     if (!parsedDate) {
-      setCreateError('Fecha invalida.');
+      setCreateError('Fecha inválida.');
       return;
     }
     if (isSlotBlocked(parsedDate, createValues.time)) {
@@ -1314,7 +1388,7 @@ function AdminDashboardContent() {
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('turnera_access_token') : null;
       if (!token) {
-        setCreateError('Necesitas iniciar sesion como admin para crear un turno.');
+        setCreateError('Necesitas iniciar sesión como admin para crear un turno.');
         return;
       }
 
@@ -1387,16 +1461,12 @@ function AdminDashboardContent() {
   const refreshBlockedSlots = async () => {
     if (!blockedSlotsUrl) {
       setBlockedSlotsError('Falta configurar NEXT_PUBLIC_API_BASE_URL.');
-      return;
+      return false;
     }
-    const startDate = monthGridStart.toISOString().slice(0, 10);
-    const endDate = monthGridEnd.toISOString().slice(0, 10);
     setBlockedSlotsLoading(true);
     setBlockedSlotsError(null);
     try {
       const query = new URLSearchParams({
-        startDate,
-        endDate,
         isActive: 'true',
       }).toString();
       const response = await fetch(`${blockedSlotsUrl}?${query}`);
@@ -1410,18 +1480,13 @@ function AdminDashboardContent() {
       } catch {
         parsed = rawText;
       }
-      const list = Array.isArray(parsed)
-        ? parsed
-        : Array.isArray((parsed as { data?: unknown }).data)
-          ? ((parsed as { data?: unknown }).data as unknown[])
-          : [];
-      const normalized = list
-        .map((item, index) => normalizeBlockedSlot(item as ApiBlockedSlot, index))
-        .filter((slot) => slot.blockedDate);
-      setBlockedSlots(normalized);
+      const normalized = parseBlockedSlotsPayload(parsed);
+      setBlockedSlots(dedupeBlockedSlots(normalized));
+      return true;
     } catch {
       setBlockedSlotsError('No se pudieron cargar los bloqueos.');
       setBlockedSlots([]);
+      return false;
     } finally {
       setBlockedSlotsLoading(false);
     }
@@ -1479,7 +1544,23 @@ function AdminDashboardContent() {
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      await refreshBlockedSlots();
+      const responseText = await response.text();
+      let parsed: unknown = responseText;
+      try {
+        parsed = JSON.parse(responseText);
+      } catch {
+        parsed = responseText;
+      }
+      const createdSlots = parseBlockedSlotsPayload(parsed);
+      if (createdSlots.length > 0) {
+        setBlockedSlots((prev) => dedupeBlockedSlots([...createdSlots, ...prev]));
+        setBlockedSlotsPage(1);
+      }
+      const refreshed = await refreshBlockedSlots();
+      if (!refreshed) {
+        setRangeNotice('Se envió el bloqueo, pero no se pudo verificar en el servidor. Intenta refrescar.');
+        return;
+      }
       setRangeBlockOpen(false);
       setRangeNotice(
         `Rango bloqueado del ${normalizedStart.toLocaleDateString('es-AR')} al ${normalizedEnd.toLocaleDateString('es-AR')}.`
@@ -1541,7 +1622,23 @@ function AdminDashboardContent() {
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      await refreshBlockedSlots();
+      const responseText = await response.text();
+      let parsed: unknown = responseText;
+      try {
+        parsed = JSON.parse(responseText);
+      } catch {
+        parsed = responseText;
+      }
+      const createdSlots = parseBlockedSlotsPayload(parsed);
+      if (createdSlots.length > 0) {
+        setBlockedSlots((prev) => dedupeBlockedSlots([...createdSlots, ...prev]));
+        setBlockedSlotsPage(1);
+      }
+      const refreshed = await refreshBlockedSlots();
+      if (!refreshed) {
+        setRangeNotice('Se envió el bloqueo, pero no se pudo verificar en el servidor. Intenta refrescar.');
+        return;
+      }
       setTimeBlockOpen(false);
       setRangeNotice(
         `Franja bloqueada para ${new Date(`${timeBlockDate}T00:00:00`).toLocaleDateString('es-AR')} de ${timeBlockStart} a ${timeBlockEnd}.`
@@ -1551,30 +1648,49 @@ function AdminDashboardContent() {
     }
   };
 
-  const handleDeactivateBlockedSlot = async (id: string) => {
+  const handleDeactivateBlockedDay = async (blockedDate: string, ids: string[]) => {
     if (!blockedSlotsUrl) {
       setRangeNotice('Falta configurar NEXT_PUBLIC_API_BASE_URL.');
       return;
     }
     const token = typeof window !== 'undefined' ? localStorage.getItem('turnera_access_token') : null;
     if (!token) {
-      setRangeNotice('Necesitas iniciar sesión como admin para reactivar horarios.');
+      setRangeNotice('Necesitas iniciar sesión como admin para reactivar bloqueos.');
       return;
     }
     try {
-      const response = await fetch(`${blockedSlotsUrl}/${id}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      const uniqueIds = Array.from(new Set(ids));
+      const responses = await Promise.allSettled(
+        uniqueIds.map((id) =>
+          fetch(`${blockedSlotsUrl}/${id}`, {
+            method: 'DELETE',
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          })
+        )
+      );
+
+      const okCount = responses.reduce((acc, result) => {
+        if (result.status === 'fulfilled' && result.value.ok) return acc + 1;
+        return acc;
+      }, 0);
+
+      if (okCount === 0) {
+        throw new Error('No se pudo reactivar ningún bloqueo de ese día');
       }
-      setBlockedSlots((prev) => prev.filter((slot) => slot.id !== id));
-      setRangeNotice('Bloqueo reactivado.');
+
+      setBlockedSlots((prev) =>
+        prev.filter((slot) => slot.blockedDate !== blockedDate || !uniqueIds.includes(slot.id))
+      );
+      await refreshBlockedSlots();
+      setRangeNotice(
+        okCount === uniqueIds.length
+          ? 'Bloqueo del día reactivado.'
+          : 'Se reactivaron algunos bloqueos del día.'
+      );
     } catch {
-      setRangeNotice('No se pudo reactivar el bloqueo.');
+      setRangeNotice('No se pudo reactivar el bloqueo del día.');
     }
   };
 
@@ -1606,7 +1722,7 @@ function AdminDashboardContent() {
         >
           <Box>
             <Typography variant="h4" sx={{ fontWeight: 700, color: '#2C2C2C', mb: 0.5 }}>
-              Panel de Administracion
+              Panel de Administración
             </Typography>
             <Typography sx={{ color: '#6B6B6B' }}>Gestiona turnos, estados y disponibilidad con una vista clara.</Typography>
           </Box>
@@ -1736,7 +1852,7 @@ function AdminDashboardContent() {
                   value: stats.total,
                   helper: `${todayAppointments.length} para hoy`,
                 },
-                { label: 'Pendientes', value: stats.pending, helper: 'Requieren confirmacion' },
+                { label: 'Pendientes', value: stats.pending, helper: 'Requieren confirmación' },
                 { label: 'Confirmados', value: stats.confirmed, helper: 'Listos para agenda' },
                 { label: 'Cancelados', value: stats.canceled, helper: 'En el periodo' },
               ].map((card) => (
@@ -1867,7 +1983,7 @@ function AdminDashboardContent() {
                         </Typography>
                         <Chip
                           size="small"
-                          label={`${blockedSlotsList.length}`}
+                          label={`${blockedDaysList.length}`}
                           sx={{ backgroundColor: '#F5E6E8', color: '#6B6B6B' }}
                         />
                         {blockedSlotsLoading && (
@@ -1881,16 +1997,34 @@ function AdminDashboardContent() {
                           <Typography sx={{ color: '#9C6B6B', fontSize: '0.82rem' }}>
                             Cargando bloqueos...
                           </Typography>
-                        ) : blockedSlotsList.length > 0 ? (
+                        ) : blockedDaysList.length > 0 ? (
                           <Stack spacing={1.2}>
-                            {blockedSlotsList.map((slot) => {
-                              const timeLabel =
-                                slot.startTime && slot.endTime
-                                  ? `${slot.startTime} - ${slot.endTime}`
-                                  : 'Todo el día';
+                            {blockedSlotsPageCount > 1 && (
+                              <Box sx={{ display: 'flex', justifyContent: 'center', pb: 0.5 }}>
+                                <Pagination
+                                  count={blockedSlotsPageCount}
+                                  page={blockedSlotsPage}
+                                  onChange={(_, page) => setBlockedSlotsPage(page)}
+                                  size="small"
+                                  shape="rounded"
+                                  sx={{
+                                    '& .MuiPaginationItem-root': { color: '#8B6B6B' },
+                                    '& .Mui-selected': { backgroundColor: '#F5E6E8', color: '#8B6B6B' },
+                                  }}
+                                />
+                              </Box>
+                            )}
+                            {paginatedBlockedSlots.map((blockedDay) => {
+                              const timeLabel = blockedDay.isFullDay
+                                ? 'Todo el día'
+                                : blockedDay.slotCount === 1 &&
+                                    blockedDay.firstStartTime &&
+                                    blockedDay.firstEndTime
+                                  ? `${blockedDay.firstStartTime} - ${blockedDay.firstEndTime}`
+                                  : `${blockedDay.slotCount} horarios`;
                               return (
                                 <Box
-                                  key={slot.id}
+                                  key={blockedDay.blockedDate}
                                   sx={{
                                     display: 'flex',
                                     flexDirection: 'column',
@@ -1902,17 +2036,17 @@ function AdminDashboardContent() {
                                   }}
                                 >
                                   <Typography sx={{ fontWeight: 600, color: '#8B6B6B', fontSize: '0.9rem' }}>
-                                    {new Date(`${slot.blockedDate}T00:00:00`).toLocaleDateString('es-AR')} · {timeLabel}
+                                    {new Date(`${blockedDay.blockedDate}T00:00:00`).toLocaleDateString('es-AR')} - {timeLabel}
                                   </Typography>
                                   <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
                                     <Chip
                                       size="small"
-                                      label={formatBlockedTypeLabel(slot.type ?? 'other')}
+                                      label={formatBlockedTypeLabel(blockedDay.type ?? 'other')}
                                       sx={{ backgroundColor: '#F5E6E8', color: '#6B6B6B' }}
                                     />
-                                    {slot.reason ? (
+                                    {blockedDay.reason ? (
                                       <Typography sx={{ color: '#6B6B6B', fontSize: '0.82rem' }}>
-                                        Motivo: {slot.reason}
+                                        Motivo: {blockedDay.reason}
                                       </Typography>
                                     ) : null}
                                   </Stack>
@@ -1920,15 +2054,30 @@ function AdminDashboardContent() {
                                     <Button
                                       size="small"
                                       variant="text"
-                                      onClick={() => handleDeactivateBlockedSlot(slot.id)}
+                                      onClick={() => handleDeactivateBlockedDay(blockedDay.blockedDate, blockedDay.ids)}
                                       sx={{ color: '#B00020', textTransform: 'none', fontWeight: 600, px: 0 }}
                                     >
-                                      Reactivar bloqueo
+                                      Reactivar día
                                     </Button>
                                   </Box>
                                 </Box>
                               );
                             })}
+                            {blockedSlotsPageCount > 1 && (
+                              <Box sx={{ display: 'flex', justifyContent: 'center', pt: 0.5 }}>
+                                <Pagination
+                                  count={blockedSlotsPageCount}
+                                  page={blockedSlotsPage}
+                                  onChange={(_, page) => setBlockedSlotsPage(page)}
+                                  size="small"
+                                  shape="rounded"
+                                  sx={{
+                                    '& .MuiPaginationItem-root': { color: '#8B6B6B' },
+                                    '& .Mui-selected': { backgroundColor: '#F5E6E8', color: '#8B6B6B' },
+                                  }}
+                                />
+                              </Box>
+                            )}
                           </Stack>
                         ) : (
                           <Typography sx={{ color: '#9C6B6B', fontSize: '0.82rem' }}>
@@ -1986,7 +2135,7 @@ function AdminDashboardContent() {
                     </Box>
                   </Box>
                   <Box>
-                    <Typography sx={{ fontWeight: 600, color: '#2C2C2C', mb: 1 }}>próximos turnos</Typography>
+                    <Typography sx={{ fontWeight: 600, color: '#2C2C2C', mb: 1 }}>Próximos turnos</Typography>
                     {loading ? (
                       <Stack spacing={1}>
                         {Array.from({ length: 3 }).map((_, index) => (
@@ -2014,7 +2163,7 @@ function AdminDashboardContent() {
                                   {appt.time}
                                 </Typography>
                             </Box>
-                            <Chip label={appt.status} size="small" sx={statusChipSx(appt.status)} />
+                            <Chip label={formatAdminStatusLabel(appt.status)} size="small" sx={statusChipSx(appt.status)} />
                           </Box>
                         ))}
                       </Stack>
@@ -2084,7 +2233,7 @@ function AdminDashboardContent() {
                     <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ alignItems: { xs: 'stretch', md: 'center' } }}>
                       <TextField
                         label="Buscar"
-                        placeholder="Codigo, beneficiario o comprador"
+                        placeholder="Código, beneficiario o comprador"
                         size="small"
                         value={giftCardSearch}
                         onChange={(event) => setGiftCardSearch(event.target.value)}
@@ -2164,7 +2313,7 @@ function AdminDashboardContent() {
                         <Table size="small" sx={{ minWidth: 900 }}>
                           <TableHead>
                             <TableRow sx={{ backgroundColor: '#FFF7F7' }}>
-                              <TableCell sx={{ fontWeight: 700, color: '#6B6B6B' }}>Codigo</TableCell>
+                              <TableCell sx={{ fontWeight: 700, color: '#6B6B6B' }}>Código</TableCell>
                               <TableCell sx={{ fontWeight: 700, color: '#6B6B6B' }}>Beneficiario</TableCell>
                               <TableCell sx={{ fontWeight: 700, color: '#6B6B6B' }}>Comprador</TableCell>
                               <TableCell sx={{ fontWeight: 700, color: '#6B6B6B' }} align="right">
@@ -2482,7 +2631,7 @@ function AdminDashboardContent() {
                         <MenuItem value="Todos">Todos</MenuItem>
                         {['Pendiente', 'Confirmado', 'Reprogramado', 'Cancelado', 'Completado', 'No asistio'].map((status) => (
                           <MenuItem key={status} value={status}>
-                            {status}
+                            {formatAdminStatusLabel(status as AdminStatus)}
                           </MenuItem>
                         ))}
                       </TextField>
@@ -2578,7 +2727,7 @@ function AdminDashboardContent() {
                                   <TableCell sx={{ color: '#6B6B6B' }}>{appt.time}</TableCell>
                                   <TableCell sx={{ color: '#6B6B6B' }}>{appt.location}</TableCell>
                                   <TableCell>
-                                    <Chip label={appt.status} size="small" sx={statusChipSx(appt.status)} />
+                                    <Chip label={formatAdminStatusLabel(appt.status)} size="small" sx={statusChipSx(appt.status)} />
                                   </TableCell>
                                   <TableCell>
                                     <Stack direction="row" spacing={1}>
@@ -2645,7 +2794,6 @@ function AdminDashboardContent() {
                 </Stack>
 
                 <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
-                  <Chip label="Libre" sx={{ backgroundColor: '#FFFFFF', border: '1px solid #E6E0DD' }} />
                   <Chip label="Ocupado" color="primary" />
                   <Chip label="Pendiente" color="warning" />
                   <Chip label="Confirmado" color="success" />
@@ -2766,7 +2914,7 @@ function AdminDashboardContent() {
                                   <Typography sx={{ fontSize: '0.75rem', color: '#8B6B6B' }}>Ocupados: {occupiedSlots}</Typography>
                                 </Stack>
                               ) : (
-                                <Typography sx={{ fontSize: '0.75rem', color: '#B8A4A4' }}>Libre</Typography>
+                                null
                               )}
                             </Box>
                           );
@@ -2802,7 +2950,7 @@ function AdminDashboardContent() {
                           }}
                         >
                           <Typography sx={{ fontWeight: 600, color: '#8B6B6B' }}>
-                            día bloqueado
+                            Día bloqueado
                           </Typography>
                           <Typography sx={{ color: '#6B6B6B', fontSize: '0.85rem' }}>
                             No se permiten nuevos turnos en este día.
@@ -2864,7 +3012,7 @@ function AdminDashboardContent() {
                                       {appointment.location}
                                     </Typography>
                                   <Chip
-                                    label={appointment.status}
+                                    label={formatAdminStatusLabel(appointment.status)}
                                     size="small"
                                     sx={{ ...statusChipSx(appointment.status), alignSelf: 'flex-start' }}
                                   />
@@ -3143,7 +3291,7 @@ function AdminDashboardContent() {
             {['Pendiente', 'Confirmado', 'Reprogramado', 'Cancelado', 'Completado', 'No asistio'].map(
               (status) => (
                 <MenuItem key={status} value={status}>
-                  {status}
+                  {formatAdminStatusLabel(status as AdminStatus)}
                 </MenuItem>
               )
             )}
@@ -3180,7 +3328,7 @@ function AdminDashboardContent() {
           >
             {['Pendiente', 'Confirmado', 'Reprogramado', 'Cancelado', 'Completado', 'No asistio'].map((status) => (
               <MenuItem key={status} value={status}>
-                {status}
+                {formatAdminStatusLabel(status as AdminStatus)}
               </MenuItem>
             ))}
           </TextField>
@@ -3206,7 +3354,7 @@ function AdminDashboardContent() {
             ¿Está seguro que quiere eliminar el turno?
           </Typography>
           <Typography sx={{ color: '#B00020', mt: 1, fontWeight: 600 }}>
-            Advertencia: si cancela el turno, no se le devolvera la seña.
+            Advertencia: si cancela el turno, no se le devolverá la seña.
           </Typography>
           <TextField
             label="Motivo de cancelación (opcional)"
@@ -3238,7 +3386,7 @@ function AdminDashboardContent() {
         <DialogTitle>Canjear Gift Card</DialogTitle>
         <DialogContent sx={{ display: 'grid', gap: 2, mt: 1 }}>
           <Typography sx={{ color: '#6B6B6B', fontSize: '0.9rem' }}>
-            {redeemTarget ? `Codigo ${redeemTarget.code} · Saldo ${formatCurrency(redeemTarget.remainingAmount)}` : ''}
+            {redeemTarget ? `Código ${redeemTarget.code} · Saldo ${formatCurrency(redeemTarget.remainingAmount)}` : ''}
           </Typography>
           <TextField
             label="Monto a canjear"
@@ -3265,6 +3413,7 @@ function AdminDashboardContent() {
     </Box>
   );
 }
+
 
 
 
