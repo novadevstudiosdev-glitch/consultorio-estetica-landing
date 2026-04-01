@@ -234,10 +234,7 @@ const dedupeBlockedSlots = (slots: BlockedSlot[]) => {
   const seen = new Map<string, BlockedSlot>();
   for (const slot of slots) {
     if (!slot.blockedDate || slot.isActive === false) continue;
-    const start = slot.startTime ?? '';
-    const end = slot.endTime ?? '';
-    const timeKey = !start && !end ? 'all-day' : `${start}-${end}`;
-    const key = `${slot.blockedDate}|${timeKey}`;
+    const key = slot.id;
     if (!seen.has(key)) {
       seen.set(key, slot);
     }
@@ -408,18 +405,21 @@ function AdminDashboardContent() {
   const [blockedSlots, setBlockedSlots] = useState<BlockedSlot[]>([]);
   const [blockedSlotsLoading, setBlockedSlotsLoading] = useState(false);
   const [blockedSlotsError, setBlockedSlotsError] = useState<string | null>(null);
+  const [reactivatingBlockedDates, setReactivatingBlockedDates] = useState<string[]>([]);
   const [rangeBlockOpen, setRangeBlockOpen] = useState(false);
   const [rangeStartDate, setRangeStartDate] = useState('');
   const [rangeEndDate, setRangeEndDate] = useState('');
   const [rangeReason, setRangeReason] = useState('');
   const [rangeType, setRangeType] = useState<BlockedSlotType>('other');
   const [rangeNotice, setRangeNotice] = useState<string | null>(null);
+  const [rangeBlocking, setRangeBlocking] = useState(false);
   const [timeBlockOpen, setTimeBlockOpen] = useState(false);
   const [timeBlockDate, setTimeBlockDate] = useState('');
   const [timeBlockStart, setTimeBlockStart] = useState('');
   const [timeBlockEnd, setTimeBlockEnd] = useState('');
   const [timeBlockReason, setTimeBlockReason] = useState('');
   const [timeBlockType, setTimeBlockType] = useState<BlockedSlotType>('other');
+  const [timeBlocking, setTimeBlocking] = useState(false);
   const [giftCards, setGiftCards] = useState<AdminGiftCard[]>([]);
   const [giftCardsLoading, setGiftCardsLoading] = useState(false);
   const [giftCardsError, setGiftCardsError] = useState<string | null>(null);
@@ -1358,15 +1358,15 @@ function AdminDashboardContent() {
     const trimmedEmail = createValues.patientEmail.trim();
     const trimmedPhone = createValues.patientPhone.trim();
     const phoneDigits = trimmedPhone.replace(/\D/g, '');
-    if (!trimmedName || !createValues.serviceId || !createValues.date || !createValues.time || !trimmedEmail || !trimmedPhone) {
+    if (!trimmedName || !createValues.serviceId || !createValues.date || !createValues.time) {
       setCreateError('Completa todos los campos obligatorios.');
       return;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmedEmail)) {
+    if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmedEmail)) {
       setCreateError('Ingresa un email valido.');
       return;
     }
-    if (phoneDigits.length < 8) {
+    if (trimmedPhone && phoneDigits.length < 8) {
       setCreateError('Ingresa un telefono valido.');
       return;
     }
@@ -1409,8 +1409,8 @@ function AdminDashboardContent() {
           appointmentDate: createValues.date,
           appointmentTime: createValues.time,
           patientName: trimmedName,
-          patientPhone: trimmedPhone,
-          patientEmail: trimmedEmail,
+          patientPhone: trimmedPhone || undefined,
+          patientEmail: trimmedEmail || undefined,
           patientNotes: notesParts.length > 0 ? notesParts.join(' | ') : undefined,
         }),
       });
@@ -1503,6 +1503,20 @@ function AdminDashboardContent() {
   };
 
   const handleConfirmRangeBlock = async () => {
+    if (rangeBlocking) return;
+    const extractApiErrorMessage = (payload: unknown, fallback: string) => {
+      if (typeof payload === 'string' && payload.trim()) return payload;
+      if (payload && typeof payload === 'object') {
+        const message = (payload as { message?: unknown }).message;
+        if (typeof message === 'string' && message.trim()) return message;
+        if (Array.isArray(message) && message.length > 0) {
+          return message.map((item) => String(item)).join(' | ');
+        }
+        const error = (payload as { error?: unknown }).error;
+        if (typeof error === 'string' && error.trim()) return error;
+      }
+      return fallback;
+    };
     setRangeNotice(null);
     if (!rangeStartDate || !rangeEndDate) {
       setRangeNotice('Selecciona el rango de fechas.');
@@ -1528,6 +1542,7 @@ function AdminDashboardContent() {
       return;
     }
     try {
+      setRangeBlocking(true);
       const response = await fetch(`${blockedSlotsUrl}/block-range`, {
         method: 'POST',
         headers: {
@@ -1541,9 +1556,6 @@ function AdminDashboardContent() {
           reason: rangeReason.trim() || undefined,
         }),
       });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
       const responseText = await response.text();
       let parsed: unknown = responseText;
       try {
@@ -1551,22 +1563,35 @@ function AdminDashboardContent() {
       } catch {
         parsed = responseText;
       }
+      if (!response.ok) {
+        setRangeNotice(
+          extractApiErrorMessage(
+            parsed,
+            `No se pudo bloquear el rango (HTTP ${response.status}).`
+          )
+        );
+        return;
+      }
       const createdSlots = parseBlockedSlotsPayload(parsed);
       if (createdSlots.length > 0) {
         setBlockedSlots((prev) => dedupeBlockedSlots([...createdSlots, ...prev]));
         setBlockedSlotsPage(1);
       }
       const refreshed = await refreshBlockedSlots();
+      setRangeBlockOpen(false);
       if (!refreshed) {
-        setRangeNotice('Se envió el bloqueo, pero no se pudo verificar en el servidor. Intenta refrescar.');
+        setRangeNotice(
+          'El rango se bloqueó, pero no se pudo refrescar la lista en pantalla. Intenta actualizar.'
+        );
         return;
       }
-      setRangeBlockOpen(false);
       setRangeNotice(
         `Rango bloqueado del ${normalizedStart.toLocaleDateString('es-AR')} al ${normalizedEnd.toLocaleDateString('es-AR')}.`
       );
     } catch {
       setRangeNotice('No se pudo bloquear el rango. Intenta nuevamente.');
+    } finally {
+      setRangeBlocking(false);
     }
   };
 
@@ -1584,6 +1609,20 @@ function AdminDashboardContent() {
   };
 
   const handleConfirmTimeBlock = async () => {
+    if (timeBlocking) return;
+    const extractApiErrorMessage = (payload: unknown, fallback: string) => {
+      if (typeof payload === 'string' && payload.trim()) return payload;
+      if (payload && typeof payload === 'object') {
+        const message = (payload as { message?: unknown }).message;
+        if (typeof message === 'string' && message.trim()) return message;
+        if (Array.isArray(message) && message.length > 0) {
+          return message.map((item) => String(item)).join(' | ');
+        }
+        const error = (payload as { error?: unknown }).error;
+        if (typeof error === 'string' && error.trim()) return error;
+      }
+      return fallback;
+    };
     setRangeNotice(null);
     if (!timeBlockDate || !timeBlockStart || !timeBlockEnd) {
       setRangeNotice('Completa fecha y horario.');
@@ -1605,6 +1644,7 @@ function AdminDashboardContent() {
       return;
     }
     try {
+      setTimeBlocking(true);
       const response = await fetch(blockedSlotsUrl, {
         method: 'POST',
         headers: {
@@ -1619,9 +1659,6 @@ function AdminDashboardContent() {
           reason: timeBlockReason.trim() || undefined,
         }),
       });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
       const responseText = await response.text();
       let parsed: unknown = responseText;
       try {
@@ -1629,22 +1666,35 @@ function AdminDashboardContent() {
       } catch {
         parsed = responseText;
       }
+      if (!response.ok) {
+        setRangeNotice(
+          extractApiErrorMessage(
+            parsed,
+            `No se pudo bloquear la franja (HTTP ${response.status}).`
+          )
+        );
+        return;
+      }
       const createdSlots = parseBlockedSlotsPayload(parsed);
       if (createdSlots.length > 0) {
         setBlockedSlots((prev) => dedupeBlockedSlots([...createdSlots, ...prev]));
         setBlockedSlotsPage(1);
       }
       const refreshed = await refreshBlockedSlots();
+      setTimeBlockOpen(false);
       if (!refreshed) {
-        setRangeNotice('Se envió el bloqueo, pero no se pudo verificar en el servidor. Intenta refrescar.');
+        setRangeNotice(
+          'La franja se bloqueó, pero no se pudo refrescar la lista en pantalla. Intenta actualizar.'
+        );
         return;
       }
-      setTimeBlockOpen(false);
       setRangeNotice(
         `Franja bloqueada para ${new Date(`${timeBlockDate}T00:00:00`).toLocaleDateString('es-AR')} de ${timeBlockStart} a ${timeBlockEnd}.`
       );
     } catch {
       setRangeNotice('No se pudo bloquear la franja. Intenta nuevamente.');
+    } finally {
+      setTimeBlocking(false);
     }
   };
 
@@ -1653,9 +1703,11 @@ function AdminDashboardContent() {
       setRangeNotice('Falta configurar NEXT_PUBLIC_API_BASE_URL.');
       return;
     }
+    setReactivatingBlockedDates((prev) => (prev.includes(blockedDate) ? prev : [...prev, blockedDate]));
     const token = typeof window !== 'undefined' ? localStorage.getItem('turnera_access_token') : null;
     if (!token) {
       setRangeNotice('Necesitas iniciar sesión como admin para reactivar bloqueos.');
+      setReactivatingBlockedDates((prev) => prev.filter((date) => date !== blockedDate));
       return;
     }
     try {
@@ -1671,19 +1723,21 @@ function AdminDashboardContent() {
         )
       );
 
-      const okCount = responses.reduce((acc, result) => {
-        if (result.status === 'fulfilled' && result.value.ok) return acc + 1;
+      const reactivatedIds = responses.reduce<string[]>((acc, result, index) => {
+        if (result.status === 'fulfilled' && result.value.ok) {
+          acc.push(uniqueIds[index]);
+        }
         return acc;
-      }, 0);
+      }, []);
+      const okCount = reactivatedIds.length;
 
       if (okCount === 0) {
         throw new Error('No se pudo reactivar ningún bloqueo de ese día');
       }
 
       setBlockedSlots((prev) =>
-        prev.filter((slot) => slot.blockedDate !== blockedDate || !uniqueIds.includes(slot.id))
+        prev.filter((slot) => slot.blockedDate !== blockedDate || !reactivatedIds.includes(slot.id))
       );
-      await refreshBlockedSlots();
       setRangeNotice(
         okCount === uniqueIds.length
           ? 'Bloqueo del día reactivado.'
@@ -1691,6 +1745,8 @@ function AdminDashboardContent() {
       );
     } catch {
       setRangeNotice('No se pudo reactivar el bloqueo del día.');
+    } finally {
+      setReactivatingBlockedDates((prev) => prev.filter((date) => date !== blockedDate));
     }
   };
 
@@ -2054,10 +2110,22 @@ function AdminDashboardContent() {
                                     <Button
                                       size="small"
                                       variant="text"
-                                      onClick={() => handleDeactivateBlockedDay(blockedDay.blockedDate, blockedDay.ids)}
+                                      type="button"
+                                      disabled={reactivatingBlockedDates.includes(blockedDay.blockedDate)}
+                                      onMouseDown={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                      }}
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        void handleDeactivateBlockedDay(blockedDay.blockedDate, blockedDay.ids);
+                                      }}
                                       sx={{ color: '#B00020', textTransform: 'none', fontWeight: 600, px: 0 }}
                                     >
-                                      Reactivar día
+                                      {reactivatingBlockedDates.includes(blockedDay.blockedDate)
+                                        ? 'Reactivando...'
+                                        : 'Reactivar día'}
                                     </Button>
                                   </Box>
                                 </Box>
@@ -3038,6 +3106,18 @@ function AdminDashboardContent() {
       <Dialog open={rangeBlockOpen} onClose={() => setRangeBlockOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Bloquear fechas</DialogTitle>
         <DialogContent sx={{ display: 'grid', gap: 2, mt: 1 }}>
+          {rangeNotice && (
+            <Box
+              sx={{
+                borderRadius: '12px',
+                border: '1px solid #F0DEDE',
+                backgroundColor: '#FFF5F7',
+                p: 1.2,
+              }}
+            >
+              <Typography sx={{ color: '#7A5A5A', fontSize: '0.88rem' }}>{rangeNotice}</Typography>
+            </Box>
+          )}
           <Typography sx={{ color: '#6B6B6B', fontSize: '0.9rem' }}>
             Selecciona un rango para cancelar turnos (una semana, un mes o días sueltos).
           </Typography>
@@ -3117,9 +3197,11 @@ function AdminDashboardContent() {
           </Stack>
         </DialogContent>
         <DialogActions sx={{ p: 3, gap: 1 }}>
-          <Button onClick={() => setRangeBlockOpen(false)}>Cancelar</Button>
-          <Button variant="contained" onClick={handleConfirmRangeBlock}>
-            Bloquear
+          <Button disabled={rangeBlocking} onClick={() => setRangeBlockOpen(false)}>
+            Cancelar
+          </Button>
+          <Button disabled={rangeBlocking} variant="contained" onClick={handleConfirmRangeBlock}>
+            {rangeBlocking ? 'Bloqueando...' : 'Bloquear'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -3127,6 +3209,18 @@ function AdminDashboardContent() {
       <Dialog open={timeBlockOpen} onClose={() => setTimeBlockOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Bloquear franja horaria</DialogTitle>
         <DialogContent sx={{ display: 'grid', gap: 2, mt: 1 }}>
+          {rangeNotice && (
+            <Box
+              sx={{
+                borderRadius: '12px',
+                border: '1px solid #F0DEDE',
+                backgroundColor: '#FFF5F7',
+                p: 1.2,
+              }}
+            >
+              <Typography sx={{ color: '#7A5A5A', fontSize: '0.88rem' }}>{rangeNotice}</Typography>
+            </Box>
+          )}
           <Typography sx={{ color: '#6B6B6B', fontSize: '0.9rem' }}>
             Selecciona una fecha y horario para bloquear reservas en ese rango.
           </Typography>
@@ -3174,9 +3268,11 @@ function AdminDashboardContent() {
           />
         </DialogContent>
         <DialogActions sx={{ p: 3, gap: 1 }}>
-          <Button onClick={() => setTimeBlockOpen(false)}>Cancelar</Button>
-          <Button variant="contained" onClick={handleConfirmTimeBlock}>
-            Bloquear
+          <Button disabled={timeBlocking} onClick={() => setTimeBlockOpen(false)}>
+            Cancelar
+          </Button>
+          <Button disabled={timeBlocking} variant="contained" onClick={handleConfirmTimeBlock}>
+            {timeBlocking ? 'Bloqueando...' : 'Bloquear'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -3224,14 +3320,14 @@ function AdminDashboardContent() {
           )}
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' } }}>
             <TextField
-              label="Telefono del paciente"
+              label="Telefono del paciente (opcional)"
               value={createValues.patientPhone}
               onChange={(event) =>
                 setCreateValues((prev) => ({ ...prev, patientPhone: event.target.value }))
               }
             />
             <TextField
-              label="Email del paciente"
+              label="Email del paciente (opcional)"
               type="email"
               value={createValues.patientEmail}
               onChange={(event) =>
