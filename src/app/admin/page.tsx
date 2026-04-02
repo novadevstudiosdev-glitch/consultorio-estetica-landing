@@ -598,14 +598,29 @@ function AdminDashboardContent() {
     const startMinutes = bh ? timeToMinutes(bh.openTime) : 9 * 60;
     const endMinutes = bh ? timeToMinutes(bh.closeTime) : 19 * 60;
     const step = bh?.slotDurationMinutes ?? 30;
-    const slots: string[] = [];
+    const slots = new Set<string>();
     for (let minutes = startMinutes; minutes < endMinutes; minutes += step) {
       const hours = Math.floor(minutes / 60);
       const mins = minutes % 60;
-      slots.push(`${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`);
+      slots.add(`${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`);
     }
-    return slots;
-  }, [selectedDate, businessHours]);
+    // Include appointment times that fall outside configured business hours
+    const isoDate = selectedDate.toISOString().slice(0, 10);
+    for (const appt of appointments) {
+      if (appt.date === isoDate && appt.time) {
+        slots.add(appt.time.slice(0, 5));
+      }
+    }
+    return [...slots].sort();
+  }, [selectedDate, businessHours, appointments]);
+
+  const isOutsideBusinessHours = (time: string): boolean => {
+    const dayName = DAY_OF_WEEK[selectedDate.getDay()];
+    const bh = businessHours.find((h) => h.dayOfWeek === dayName && h.isActive);
+    if (!bh) return false;
+    const t = timeToMinutes(time);
+    return t < timeToMinutes(bh.openTime) || t >= timeToMinutes(bh.closeTime);
+  };
 
   const rangePreview = useMemo(() => {
     if (!rangeStartDate || !rangeEndDate) return null;
@@ -3133,6 +3148,7 @@ function AdminDashboardContent() {
                         {timeSlots.map((time) => {
                           const appointment = getAppointmentForSlot(selectedDate, time);
                           const isBlockedSlot = !appointment && isSlotBlocked(selectedDate, time);
+                          const outsideHours = isOutsideBusinessHours(time);
                           return (
                             <Box
                               key={time}
@@ -3153,7 +3169,7 @@ function AdminDashboardContent() {
                                 p: 1.2,
                                 borderRadius: '12px',
                                 backgroundColor: appointment ? '#F6E9ED' : isBlockedSlot ? '#F7F1F2' : '#FFFDFD',
-                                border: '1px solid #F5E6E8',
+                                border: outsideHours ? '1px dashed #D4A843' : '1px solid #F5E6E8',
                                 cursor: appointment ? 'pointer' : isBlockedSlot ? 'not-allowed' : 'pointer',
                               }}
                             >
@@ -3164,11 +3180,20 @@ function AdminDashboardContent() {
                                     <Typography sx={{ fontSize: '0.85rem', color: '#6B6B6B' }}>
                                       {appointment.location}
                                     </Typography>
-                                  <Chip
-                                    label={formatAdminStatusLabel(appointment.status)}
-                                    size="small"
-                                    sx={{ ...statusChipSx(appointment.status), alignSelf: 'flex-start' }}
-                                  />
+                                  <Stack direction="row" spacing={0.5} flexWrap="wrap">
+                                    <Chip
+                                      label={formatAdminStatusLabel(appointment.status)}
+                                      size="small"
+                                      sx={{ ...statusChipSx(appointment.status), alignSelf: 'flex-start' }}
+                                    />
+                                    {outsideHours && (
+                                      <Chip
+                                        label="Fuera de horario"
+                                        size="small"
+                                        sx={{ backgroundColor: '#FFF3CD', color: '#856404', alignSelf: 'flex-start', fontSize: '0.7rem' }}
+                                      />
+                                    )}
+                                  </Stack>
                                 </Stack>
                               ) : (
                                 <Typography sx={{ fontSize: '0.82rem', color: '#B8A4A4' }}>
