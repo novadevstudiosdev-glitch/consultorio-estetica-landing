@@ -98,6 +98,26 @@ export const theme = createTheme({
         noSsr: true,
       },
     },
+    MuiDialog: {
+      defaultProps: {
+        disableScrollLock: true,
+      },
+    },
+    MuiDrawer: {
+      defaultProps: {
+        disableScrollLock: true,
+      },
+    },
+    MuiMenu: {
+      defaultProps: {
+        disableScrollLock: true,
+      },
+    },
+    MuiPopover: {
+      defaultProps: {
+        disableScrollLock: true,
+      },
+    },
     MuiButton: {
       styleOverrides: {
         root: {
