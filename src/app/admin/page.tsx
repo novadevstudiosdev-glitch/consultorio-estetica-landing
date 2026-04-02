@@ -55,6 +55,17 @@ type BlockedDayGroup = {
 
 type ApiBlockedSlot = Record<string, unknown>;
 
+type BusinessHour = {
+  id: string;
+  dayOfWeek: string;
+  openTime: string;
+  closeTime: string;
+  slotDurationMinutes?: number;
+  isActive?: boolean;
+};
+
+type ApiBusinessHour = Record<string, unknown>;
+
 type GiftCardStatus = 'pending' | 'active' | 'redeemed' | 'expired' | 'cancelled';
 
 type AdminGiftCard = {
@@ -85,6 +96,7 @@ const appointmentsUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/appointments`;
 const servicesUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/services`;
 const blockedSlotsUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/blocked-slots`;
 const giftCardsUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/gift-cards`;
+const businessHoursUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/business-hours`;
 
 const BLOCKED_SLOT_TYPES: { value: BlockedSlotType; label: string }[] = [
   { value: 'vacation', label: 'Vacaciones' },
@@ -105,6 +117,26 @@ const CALENDAR_WEEK_DAYS = [
 ] as const;
 
 const DARKER_PINK_WEEKDAYS = new Set([1, 2, 4, 5]); // Lun, Mar, Jue, Vie
+
+const BUSINESS_HOURS_ORDER = [
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+];
+
+const BUSINESS_HOURS_LABELS: Record<string, string> = {
+  monday: 'Lunes',
+  tuesday: 'Martes',
+  wednesday: 'Miércoles',
+  thursday: 'Jueves',
+  friday: 'Viernes',
+  saturday: 'Sábado',
+  sunday: 'Domingo',
+};
 
 const statusChipSx = (status: AdminStatus) => {
   switch (status) {
@@ -226,6 +258,25 @@ const normalizeBlockedSlot = (raw: ApiBlockedSlot, index: number): BlockedSlot =
     endTime: normalizeBlockedTime((raw.endTime as string | undefined) ?? (raw.end_time as string | undefined)),
     type: (raw.type as string | undefined) ?? undefined,
     reason: (raw.reason as string | undefined) ?? undefined,
+    isActive: typeof raw.isActive === 'boolean' ? raw.isActive : (raw.is_active as boolean | undefined),
+  };
+};
+
+const normalizeBusinessHour = (raw: ApiBusinessHour, index: number): BusinessHour => {
+  const id = String((raw.id as string | number | undefined) ?? (raw._id as string | number | undefined) ?? `BH-${index + 1}`);
+  const dayRaw = String((raw.dayOfWeek as string | undefined) ?? (raw.day_of_week as string | undefined) ?? '');
+  const dayOfWeek = dayRaw.toLowerCase();
+  const normalizeTimeValue = (value?: string | null) => (value ? String(value).slice(0, 5) : '');
+  return {
+    id,
+    dayOfWeek,
+    openTime: normalizeTimeValue(raw.openTime as string | undefined),
+    closeTime: normalizeTimeValue(raw.closeTime as string | undefined),
+    slotDurationMinutes: typeof raw.slotDurationMinutes === 'number'
+      ? raw.slotDurationMinutes
+      : typeof raw.slot_duration_minutes === 'number'
+        ? (raw.slot_duration_minutes as number)
+        : undefined,
     isActive: typeof raw.isActive === 'boolean' ? raw.isActive : (raw.is_active as boolean | undefined),
   };
 };
@@ -405,6 +456,18 @@ function AdminDashboardContent() {
   const [blockedSlots, setBlockedSlots] = useState<BlockedSlot[]>([]);
   const [blockedSlotsLoading, setBlockedSlotsLoading] = useState(false);
   const [blockedSlotsError, setBlockedSlotsError] = useState<string | null>(null);
+  const [businessHours, setBusinessHours] = useState<BusinessHour[]>([]);
+  const [businessHoursLoading, setBusinessHoursLoading] = useState(false);
+  const [businessHoursError, setBusinessHoursError] = useState<string | null>(null);
+  const [businessHoursEditing, setBusinessHoursEditing] = useState<BusinessHour | null>(null);
+  const [businessHoursEditValues, setBusinessHoursEditValues] = useState({
+    openTime: '',
+    closeTime: '',
+    slotDurationMinutes: '30',
+    isActive: true,
+  });
+  const [businessHoursSaving, setBusinessHoursSaving] = useState(false);
+  const [businessHoursEditError, setBusinessHoursEditError] = useState<string | null>(null);
   const [reactivatingBlockedDates, setReactivatingBlockedDates] = useState<string[]>([]);
   const [rangeBlockOpen, setRangeBlockOpen] = useState(false);
   const [rangeStartDate, setRangeStartDate] = useState('');
@@ -529,11 +592,63 @@ function AdminDashboardContent() {
     [blockedSlotsUrl]
   );
 
+  const loadBusinessHours = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!businessHoursUrl) {
+        setBusinessHoursError('Falta configurar NEXT_PUBLIC_API_BASE_URL.');
+        setBusinessHours([]);
+        return;
+      }
+      setBusinessHoursLoading(true);
+      setBusinessHoursError(null);
+      try {
+        const response = await fetch(businessHoursUrl, { signal });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const rawText = await response.text();
+        let parsed: unknown = rawText;
+        try {
+          parsed = JSON.parse(rawText);
+        } catch {
+          parsed = rawText;
+        }
+        const list = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray((parsed as { data?: unknown }).data)
+            ? ((parsed as { data?: unknown }).data as unknown[])
+            : [];
+        const normalized = list.map((item, index) => normalizeBusinessHour(item as ApiBusinessHour, index));
+        normalized.sort((a, b) => BUSINESS_HOURS_ORDER.indexOf(a.dayOfWeek) - BUSINESS_HOURS_ORDER.indexOf(b.dayOfWeek));
+        if (!signal?.aborted) {
+          setBusinessHours(normalized);
+          if (normalized.length === 0) {
+            setBusinessHoursError('No hay horarios laborales configurados.');
+          }
+        }
+      } catch {
+        if (!signal?.aborted) {
+          setBusinessHoursError('No se pudieron cargar los horarios laborales.');
+          setBusinessHours([]);
+        }
+      } finally {
+        if (!signal?.aborted) setBusinessHoursLoading(false);
+      }
+    },
+    [businessHoursUrl]
+  );
+
   useEffect(() => {
     const controller = new AbortController();
     loadBlockedSlots(controller.signal);
     return () => controller.abort();
   }, [loadBlockedSlots]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadBusinessHours(controller.signal);
+    return () => controller.abort();
+  }, [loadBusinessHours]);
 
   const timeSlots = useMemo(() => {
     const slots: string[] = [];
@@ -615,6 +730,156 @@ function AdminDashboardContent() {
       const endMinutes = parseTimeToMinutes(block.endTime);
       return slotMinutes >= startMinutes && slotMinutes < endMinutes;
     });
+  };
+
+  const formatBusinessHoursDay = (value: string) => {
+    const key = value?.toLowerCase() ?? '';
+    return BUSINESS_HOURS_LABELS[key] ?? value;
+  };
+
+  const handleOpenBusinessHoursEdit = (item: BusinessHour) => {
+    setBusinessHoursEditError(null);
+    setBusinessHoursEditing(item);
+    setBusinessHoursEditValues({
+      openTime: item.openTime || '',
+      closeTime: item.closeTime || '',
+      slotDurationMinutes: String(item.slotDurationMinutes ?? 30),
+      isActive: item.isActive !== false,
+    });
+  };
+
+  const handleCloseBusinessHoursEdit = () => {
+    setBusinessHoursEditing(null);
+    setBusinessHoursEditError(null);
+    setBusinessHoursSaving(false);
+  };
+
+  const handleSaveBusinessHours = async () => {
+    if (!businessHoursEditing) return;
+    setBusinessHoursEditError(null);
+    const openTime = businessHoursEditValues.openTime.trim();
+    const closeTime = businessHoursEditValues.closeTime.trim();
+    if (!openTime || !closeTime) {
+      setBusinessHoursEditError('Completa la hora de apertura y cierre.');
+      return;
+    }
+    const openMinutes = parseTimeToMinutes(openTime);
+    const closeMinutes = parseTimeToMinutes(closeTime);
+    if (closeMinutes <= openMinutes) {
+      setBusinessHoursEditError('La hora de cierre debe ser posterior a la de apertura.');
+      return;
+    }
+    const durationNumber = Number(businessHoursEditValues.slotDurationMinutes);
+    if (!Number.isFinite(durationNumber) || durationNumber < 15) {
+      setBusinessHoursEditError('La duración mínima de cada slot es 15 minutos.');
+      return;
+    }
+
+    const extractApiErrorMessage = (payload: unknown, fallback: string) => {
+      const normalizeValidationMessage = (value: string) => {
+        const message = value.trim();
+        const normalized = message.toLowerCase();
+        if (!message) return fallback;
+        if (normalized.includes('la hora de cierre') && normalized.includes('apertura')) {
+          return 'La hora de cierre debe ser posterior a la de apertura.';
+        }
+        if (normalized.includes('horario invalido') || normalized.includes('horario inválido')) {
+          return 'El horario es inválido. Usa el formato HH:mm.';
+        }
+        if (normalized.includes('duración mínima') || normalized.includes('duracion minima')) {
+          return 'La duración mínima es 15 minutos.';
+        }
+        if (normalized.includes('día de la semana inválido') || normalized.includes('dia de la semana invalido')) {
+          return 'El día de la semana es inválido.';
+        }
+        if (normalized.includes('datos inválidos') || normalized.includes('datos invalidos')) {
+          return 'Datos inválidos. Revisa los campos ingresados.';
+        }
+        return message;
+      };
+
+      if (typeof payload === 'string' && payload.trim()) {
+        return normalizeValidationMessage(payload);
+      }
+      if (payload && typeof payload === 'object') {
+        const message = (payload as { message?: unknown }).message;
+        if (typeof message === 'string' && message.trim()) {
+          return normalizeValidationMessage(message);
+        }
+        if (Array.isArray(message) && message.length > 0) {
+          return message.map((item) => normalizeValidationMessage(String(item))).join(' | ');
+        }
+        const error = (payload as { error?: unknown }).error;
+        if (typeof error === 'string' && error.trim()) {
+          return normalizeValidationMessage(error);
+        }
+      }
+      return fallback;
+    };
+
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('turnera_access_token') : null;
+      if (!token) {
+        setBusinessHoursEditError('Necesitas iniciar sesión como admin para actualizar horarios.');
+        return;
+      }
+      setBusinessHoursSaving(true);
+      const previous = businessHours;
+      const optimistic = {
+        ...businessHoursEditing,
+        openTime,
+        closeTime,
+        slotDurationMinutes: durationNumber,
+        isActive: businessHoursEditValues.isActive,
+      };
+      setBusinessHours((prev) =>
+        prev.map((item) => (item.id === businessHoursEditing.id ? optimistic : item)),
+      );
+      const response = await fetch(`${businessHoursUrl}/${businessHoursEditing.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          openTime,
+          closeTime,
+          slotDurationMinutes: durationNumber,
+          isActive: businessHoursEditValues.isActive,
+        }),
+      });
+      const rawText = await response.text();
+      let parsed: unknown = rawText;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        parsed = rawText;
+      }
+      if (!response.ok) {
+        const message = extractApiErrorMessage(
+          parsed,
+          `No se pudo actualizar el horario (HTTP ${response.status}).`,
+        );
+        setBusinessHours(previous);
+        throw new Error(message);
+      }
+      const updated = normalizeBusinessHour(parsed as ApiBusinessHour, 0);
+      setBusinessHours((prev) =>
+        prev.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      handleCloseBusinessHoursEdit();
+    } catch (error) {
+      if (businessHoursEditing) {
+        setBusinessHours((prev) =>
+          prev.map((item) => (item.id === businessHoursEditing.id ? businessHoursEditing : item)),
+        );
+      }
+      setBusinessHoursEditError(
+        error instanceof Error ? error.message : 'No se pudo actualizar el horario.',
+      );
+    } finally {
+      setBusinessHoursSaving(false);
+    }
   };
 
   const selectedDayBlocks = getBlockedSlotsForDate(selectedDate);
@@ -1107,9 +1372,10 @@ function AdminDashboardContent() {
       loadGiftCards();
       loadTestimonials();
       loadBlockedSlots();
+      loadBusinessHours();
     }, AUTO_REFRESH_MS);
     return () => window.clearInterval(id);
-  }, [loadAppointments, loadGiftCards, loadTestimonials, loadBlockedSlots]);
+  }, [loadAppointments, loadGiftCards, loadTestimonials, loadBlockedSlots, loadBusinessHours]);
 
   const handleOpenEdit = (appointment: AdminAppointment) => {
     setEditing(appointment);
@@ -2251,6 +2517,135 @@ function AdminDashboardContent() {
                 </Stack>
               </CardContent>
             </Card>
+
+            <Card
+              sx={{
+                borderRadius: '20px',
+                border: '1px solid #F0DEDE',
+                backgroundColor: '#FFFFFF',
+              }}
+            >
+              <CardContent sx={{ p: { xs: 2.5, md: 3 } }}>
+                <Stack spacing={2}>
+                  <Box>
+                    <Typography sx={{ fontWeight: 700, color: '#2C2C2C', mb: 0.5 }}>
+                      Horarios laborales
+                    </Typography>
+                    <Typography sx={{ color: '#6B6B6B', fontSize: '0.9rem' }}>
+                      Edita los horarios de atención y duración de turnos por día.
+                    </Typography>
+                  </Box>
+                  <Box>
+                    <Button
+                      variant="outlined"
+                      onClick={() => loadBusinessHours()}
+                      disabled={businessHoursLoading}
+                      sx={{
+                        borderRadius: '999px',
+                        px: 2.6,
+                        py: 1,
+                        borderColor: '#E9E4E2',
+                        color: '#6B6B6B',
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        '&:hover': {
+                          borderColor: '#EEBBC3',
+                          backgroundColor: '#FDF4F6',
+                        },
+                      }}
+                    >
+                      {businessHoursLoading ? 'Actualizando...' : 'Refrescar horarios'}
+                    </Button>
+                  </Box>
+
+                  {businessHoursError && (
+                    <Typography sx={{ color: '#B00020', fontSize: '0.9rem' }}>
+                      {businessHoursError}
+                    </Typography>
+                  )}
+
+                  {businessHoursLoading ? (
+                    <Box sx={{ display: 'grid', gap: 1.2 }}>
+                      {Array.from({ length: 4 }).map((_, index) => (
+                        <Skeleton key={`bh-skeleton-${index}`} height={32} />
+                      ))}
+                    </Box>
+                  ) : businessHours.length === 0 ? (
+                    <Box
+                      sx={{
+                        borderRadius: '16px',
+                        border: '1px dashed #E6E0DD',
+                        p: { xs: 2, md: 2.5 },
+                        textAlign: 'center',
+                      }}
+                    >
+                      <Typography sx={{ color: '#6B6B6B' }}>
+                        No hay horarios cargados todavía.
+                      </Typography>
+                    </Box>
+                  ) : (
+                    <TableContainer
+                      sx={{
+                        borderRadius: '16px',
+                        border: '1px solid #F0DEDE',
+                        overflowX: 'auto',
+                        overflowY: 'hidden',
+                      }}
+                    >
+                      <Table size="small" sx={{ minWidth: 520 }}>
+                        <TableHead>
+                          <TableRow sx={{ backgroundColor: '#FFF7F7' }}>
+                            <TableCell sx={{ fontWeight: 700, color: '#6B6B6B' }}>Día</TableCell>
+                            <TableCell sx={{ fontWeight: 700, color: '#6B6B6B' }}>Apertura</TableCell>
+                            <TableCell sx={{ fontWeight: 700, color: '#6B6B6B' }}>Cierre</TableCell>
+                            <TableCell sx={{ fontWeight: 700, color: '#6B6B6B' }}>Duración</TableCell>
+                            <TableCell sx={{ fontWeight: 700, color: '#6B6B6B' }}>Estado</TableCell>
+                            <TableCell sx={{ fontWeight: 700, color: '#6B6B6B' }} align="right">
+                              Acciones
+                            </TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {businessHours.map((item) => (
+                            <TableRow key={item.id}>
+                              <TableCell sx={{ fontWeight: 600, color: '#2C2C2C' }}>
+                                {formatBusinessHoursDay(item.dayOfWeek)}
+                              </TableCell>
+                              <TableCell sx={{ color: '#6B6B6B' }}>{item.openTime || '--:--'}</TableCell>
+                              <TableCell sx={{ color: '#6B6B6B' }}>{item.closeTime || '--:--'}</TableCell>
+                              <TableCell sx={{ color: '#6B6B6B' }}>
+                                {item.slotDurationMinutes ? `${item.slotDurationMinutes} min` : '--'}
+                              </TableCell>
+                              <TableCell>
+                                <Chip
+                                  size="small"
+                                  label={item.isActive === false ? 'Inactivo' : 'Activo'}
+                                  sx={{
+                                    backgroundColor: item.isActive === false ? '#EEE7E7' : '#E7F4EC',
+                                    color: item.isActive === false ? '#7A6C6C' : '#2F6B4B',
+                                    fontWeight: 600,
+                                  }}
+                                />
+                              </TableCell>
+                              <TableCell align="right">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => handleOpenBusinessHoursEdit(item)}
+                                  sx={{ color: '#8B6B6B' }}
+                                  aria-label="Editar horario"
+                                >
+                                  <EditOutlinedIcon fontSize="small" />
+                                </IconButton>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </Stack>
+              </CardContent>
+            </Card>
           </Box>
 
           <Card
@@ -3102,6 +3497,74 @@ function AdminDashboardContent() {
           </Card>
         </Stack>
       </Container>
+
+      <Dialog
+        open={Boolean(businessHoursEditing)}
+        onClose={handleCloseBusinessHoursEdit}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Editar horario laboral</DialogTitle>
+        <DialogContent sx={{ display: 'grid', gap: 2, mt: 1 }}>
+          <Typography sx={{ color: '#6B6B6B', fontSize: '0.9rem' }}>
+            {businessHoursEditing ? formatBusinessHoursDay(businessHoursEditing.dayOfWeek) : ''}
+          </Typography>
+          <TextField
+            label="Apertura"
+            type="time"
+            value={businessHoursEditValues.openTime}
+            onChange={(event) =>
+              setBusinessHoursEditValues((prev) => ({ ...prev, openTime: event.target.value }))
+            }
+            InputLabelProps={{ shrink: true }}
+          />
+          <TextField
+            label="Cierre"
+            type="time"
+            value={businessHoursEditValues.closeTime}
+            onChange={(event) =>
+              setBusinessHoursEditValues((prev) => ({ ...prev, closeTime: event.target.value }))
+            }
+            InputLabelProps={{ shrink: true }}
+          />
+          <TextField
+            label="Duración (minutos)"
+            type="number"
+            value={businessHoursEditValues.slotDurationMinutes}
+            onChange={(event) =>
+              setBusinessHoursEditValues((prev) => ({ ...prev, slotDurationMinutes: event.target.value }))
+            }
+            inputProps={{ min: 15, step: 5 }}
+          />
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Typography sx={{ color: '#6B6B6B', fontSize: '0.9rem' }}>Activo</Typography>
+            <Switch
+              checked={businessHoursEditValues.isActive}
+              onChange={(event) =>
+                setBusinessHoursEditValues((prev) => ({ ...prev, isActive: event.target.checked }))
+              }
+            />
+          </Box>
+          {businessHoursEditError && (
+            <Typography sx={{ color: '#B00020', fontSize: '0.85rem' }}>
+              {businessHoursEditError}
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ p: 3, gap: 1 }}>
+          <Button variant="outlined" onClick={handleCloseBusinessHoursEdit} disabled={businessHoursSaving}>
+            Cancelar
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleSaveBusinessHours}
+            disabled={businessHoursSaving}
+            sx={{ backgroundColor: '#EEBBC3', color: '#2C2C2C', textTransform: 'none', fontWeight: 600 }}
+          >
+            {businessHoursSaving ? 'Guardando...' : 'Guardar'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={rangeBlockOpen} onClose={() => setRangeBlockOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Bloquear fechas</DialogTitle>
