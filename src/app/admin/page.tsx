@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Card, CardContent, Chip, CircularProgress, Container, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, MenuItem, Pagination, Skeleton, Stack, Switch, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography } from '@mui/material';
+import { Accordion, AccordionDetails, AccordionSummary, Autocomplete, Box, Button, Card, CardContent, Chip, CircularProgress, Container, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, MenuItem, Pagination, Skeleton, Stack, Switch, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography } from '@mui/material';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { RequireAuth } from '@/components/auth/RequireAuth';
@@ -20,6 +20,8 @@ type AdminAppointment = {
   durationMinutes?: number;
   location: string;
   status: AdminStatus;
+  patientPhone?: string;
+  patientEmail?: string;
 };
 
 type ApiAppointment = Record<string, unknown>;
@@ -78,6 +80,15 @@ type ApiGiftCard = Record<string, unknown>;
 
 type AdminTestimonial = ReviewRecord;
 
+type BusinessHoursRecord = {
+  id: string;
+  dayOfWeek: string;
+  openTime: string;
+  closeTime: string;
+  slotDurationMinutes: number;
+  isActive: boolean;
+};
+
 const initialAdminAppointments: AdminAppointment[] = [];
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
@@ -85,6 +96,14 @@ const appointmentsUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/appointments`;
 const servicesUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/services`;
 const blockedSlotsUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/blocked-slots`;
 const giftCardsUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/gift-cards`;
+const businessHoursUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/business-hours`;
+
+const DAY_OF_WEEK = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+const timeToMinutes = (time: string) => {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + (m ?? 0);
+};
 
 const BLOCKED_SLOT_TYPES: { value: BlockedSlotType; label: string }[] = [
   { value: 'vacation', label: 'Vacaciones' },
@@ -192,6 +211,8 @@ const normalizeAppointment = (raw: ApiAppointment, index: number): AdminAppointm
   const locationMatch = notesValue.match(/Sede:\s*([^|]+)/i);
   const locationValue = locationMatch?.[1]?.trim() ?? (raw.location as string | undefined) ?? (raw.branch as string | undefined) ?? (raw.city as string | undefined) ?? (raw.location as { name?: string } | undefined)?.name ?? 'Sucursal';
   const clientValue = (raw.patientName as string | undefined) ?? (raw.clientName as string | undefined) ?? (raw.customerName as string | undefined) ?? (raw.user as { fullName?: string; name?: string } | undefined)?.fullName ?? (raw.user as { fullName?: string; name?: string } | undefined)?.name ?? 'Cliente';
+  const phoneValue = (raw.patientPhone as string | undefined) ?? (raw.phone as string | undefined) ?? undefined;
+  const emailValue = (raw.patientEmail as string | undefined) ?? (raw.email as string | undefined) ?? (raw.user as { email?: string } | undefined)?.email ?? undefined;
   const { date, time } = resolveDateTime(raw);
   return {
     id,
@@ -202,6 +223,8 @@ const normalizeAppointment = (raw: ApiAppointment, index: number): AdminAppointm
     time: time || '09:00',
     status: normalizeStatus(raw.status),
     durationMinutes: (raw.durationMinutes as number | undefined) ?? (raw.duration as number | undefined) ?? (raw.durationMin as number | undefined) ?? (raw.service as { durationMinutes?: number } | undefined)?.durationMinutes,
+    patientPhone: phoneValue,
+    patientEmail: emailValue,
   };
 };
 
@@ -373,6 +396,10 @@ function AdminDashboardContent() {
     time: '',
     status: 'Pendiente' as AdminStatus,
     service: '',
+    location: '',
+    clientName: '',
+    patientPhone: '',
+    patientEmail: '',
   });
   const [cancelTargetId, setCancelTargetId] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState('');
@@ -441,6 +468,7 @@ function AdminDashboardContent() {
   const [testimonialPage, setTestimonialPage] = useState(1);
   const [appointmentPage, setAppointmentPage] = useState(1);
   const [blockedSlotsPage, setBlockedSlotsPage] = useState(1);
+  const [businessHours, setBusinessHours] = useState<BusinessHoursRecord[]>([]);
 
   const GIFT_CARDS_PAGE_SIZE = 6;
   const TESTIMONIALS_PAGE_SIZE = 6;
@@ -490,13 +518,13 @@ function AdminDashboardContent() {
   }, [monthStart, selectedDate]);
 
   const loadBlockedSlots = useCallback(
-    async (signal?: AbortSignal) => {
+    async (signal?: AbortSignal, silent = false) => {
       if (!blockedSlotsUrl) {
         setBlockedSlotsError('Falta configurar NEXT_PUBLIC_API_BASE_URL.');
         setBlockedSlots([]);
         return;
       }
-      setBlockedSlotsLoading(true);
+      if (!silent) setBlockedSlotsLoading(true);
       setBlockedSlotsError(null);
       try {
         const query = new URLSearchParams({
@@ -515,15 +543,19 @@ function AdminDashboardContent() {
         }
         const normalized = parseBlockedSlotsPayload(parsed);
         if (!signal?.aborted) {
-          setBlockedSlots(dedupeBlockedSlots(normalized));
+          const deduped = dedupeBlockedSlots(normalized);
+          setBlockedSlots((prev) => {
+            if (JSON.stringify(prev) === JSON.stringify(deduped)) return prev;
+            return deduped;
+          });
         }
       } catch {
-        if (!signal?.aborted) {
+        if (!signal?.aborted && !silent) {
           setBlockedSlotsError('No se pudieron cargar los bloqueos.');
           setBlockedSlots([]);
         }
       } finally {
-        if (!signal?.aborted) setBlockedSlotsLoading(false);
+        if (!signal?.aborted && !silent) setBlockedSlotsLoading(false);
       }
     },
     [blockedSlotsUrl]
@@ -535,18 +567,45 @@ function AdminDashboardContent() {
     return () => controller.abort();
   }, [loadBlockedSlots]);
 
+  const loadBusinessHours = useCallback(async (signal?: AbortSignal, silent = false) => {
+    try {
+      const response = await fetch(businessHoursUrl, { signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = (await response.json()) as unknown;
+      const list: BusinessHoursRecord[] = Array.isArray(data) ? (data as BusinessHoursRecord[]) : [];
+      if (!signal?.aborted) {
+        setBusinessHours((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(list)) return prev;
+          return list;
+        });
+      }
+    } catch {
+      if (!signal?.aborted && !silent) {
+        // silently fail — timeSlots fallback to hardcoded defaults
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadBusinessHours(controller.signal);
+    return () => controller.abort();
+  }, [loadBusinessHours]);
+
   const timeSlots = useMemo(() => {
+    const dayName = DAY_OF_WEEK[selectedDate.getDay()];
+    const bh = businessHours.find((h) => h.dayOfWeek === dayName && h.isActive);
+    const startMinutes = bh ? timeToMinutes(bh.openTime) : 9 * 60;
+    const endMinutes = bh ? timeToMinutes(bh.closeTime) : 19 * 60;
+    const step = bh?.slotDurationMinutes ?? 30;
     const slots: string[] = [];
-    const startMinutes = 9 * 60;
-    const endMinutes = 19 * 60;
-    const step = 30;
     for (let minutes = startMinutes; minutes < endMinutes; minutes += step) {
       const hours = Math.floor(minutes / 60);
       const mins = minutes % 60;
       slots.push(`${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`);
     }
     return slots;
-  }, []);
+  }, [selectedDate, businessHours]);
 
   const rangePreview = useMemo(() => {
     if (!rangeStartDate || !rangeEndDate) return null;
@@ -642,8 +701,16 @@ function AdminDashboardContent() {
   const todayKey = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const locationOptions = useMemo(() => {
-    const unique = new Set(appointments.map((appt) => appt.location).filter(Boolean));
-    return ['Todas', ...Array.from(unique)];
+    const seen = new Map<string, string>();
+    for (const appt of appointments) {
+      if (appt.location) {
+        const key = appt.location.toLowerCase();
+        if (!seen.has(key)) {
+          seen.set(key, appt.location.charAt(0).toUpperCase() + appt.location.slice(1).toLowerCase());
+        }
+      }
+    }
+    return ['Todas', ...Array.from(seen.values())];
   }, [appointments]);
 
   const filteredAppointments = useMemo(() => {
@@ -851,13 +918,13 @@ function AdminDashboardContent() {
   }, [router]);
 
   const loadAppointments = useCallback(
-    async (signal?: AbortSignal) => {
+    async (signal?: AbortSignal, silent = false) => {
       if (!appointmentsUrl) {
         setLoading(false);
         setError('Falta configurar NEXT_PUBLIC_API_BASE_URL.');
         return;
       }
-      setLoading(true);
+      if (!silent) setLoading(true);
       setError(null);
       try {
         const token = typeof window !== 'undefined' ? localStorage.getItem('turnera_access_token') : null;
@@ -901,31 +968,34 @@ function AdminDashboardContent() {
             : [];
         const normalized = list.map((item, index) => normalizeAppointment(item as ApiAppointment, index));
         if (!signal?.aborted) {
-          setAppointments(normalized);
-          if (normalized.length === 0) {
+          setAppointments((prev) => {
+            if (JSON.stringify(prev) === JSON.stringify(normalized)) return prev;
+            return normalized;
+          });
+          if (!silent && normalized.length === 0) {
             setError('No se encontraron turnos en el servidor.');
           }
         }
       } catch {
-        if (!signal?.aborted) {
+        if (!signal?.aborted && !silent) {
           setError('No se pudieron cargar los turnos desde el servidor.');
           setAppointments([]);
         }
       } finally {
-        if (!signal?.aborted) setLoading(false);
+        if (!signal?.aborted && !silent) setLoading(false);
       }
     },
     [appointmentsUrl, router]
   );
 
   const loadGiftCards = useCallback(
-    async (signal?: AbortSignal) => {
+    async (signal?: AbortSignal, silent = false) => {
       if (!giftCardsUrl) {
         setGiftCardsError('Falta configurar NEXT_PUBLIC_API_BASE_URL.');
         setGiftCards([]);
         return;
       }
-      setGiftCardsLoading(true);
+      if (!silent) setGiftCardsLoading(true);
       setGiftCardsError(null);
       try {
         const token = typeof window !== 'undefined' ? localStorage.getItem('turnera_access_token') : null;
@@ -969,26 +1039,29 @@ function AdminDashboardContent() {
             : [];
         const normalized = list.map((item, index) => normalizeGiftCard(item as ApiGiftCard, index));
         if (!signal?.aborted) {
-          setGiftCards(normalized);
-          if (normalized.length === 0) {
+          setGiftCards((prev) => {
+            if (JSON.stringify(prev) === JSON.stringify(normalized)) return prev;
+            return normalized;
+          });
+          if (!silent && normalized.length === 0) {
             setGiftCardsError('No se encontraron gift cards en el servidor.');
           }
         }
       } catch {
-        if (!signal?.aborted) {
+        if (!signal?.aborted && !silent) {
           setGiftCardsError('No se pudieron cargar las gift cards.');
           setGiftCards([]);
         }
       } finally {
-        if (!signal?.aborted) setGiftCardsLoading(false);
+        if (!signal?.aborted && !silent) setGiftCardsLoading(false);
       }
     },
     [giftCardsUrl, router]
   );
 
   const loadTestimonials = useCallback(
-    async (signal?: AbortSignal) => {
-      setTestimonialsLoading(true);
+    async (signal?: AbortSignal, silent = false) => {
+      if (!silent) setTestimonialsLoading(true);
       setTestimonialsError(null);
       try {
         const token = typeof window !== 'undefined' ? localStorage.getItem('turnera_access_token') : null;
@@ -1001,18 +1074,21 @@ function AdminDashboardContent() {
         }
         const data = await fetchReviews({ token, signal });
         if (!signal?.aborted) {
-          setTestimonials(data);
-          if (data.length === 0) {
+          setTestimonials((prev) => {
+            if (JSON.stringify(prev) === JSON.stringify(data)) return prev;
+            return data;
+          });
+          if (!silent && data.length === 0) {
             setTestimonialsError('No se encontraron reseñas en el servidor.');
           }
         }
       } catch (err) {
-        if (!signal?.aborted) {
+        if (!signal?.aborted && !silent) {
           setTestimonialsError(err instanceof Error ? err.message : 'No se pudieron cargar las reseñas.');
           setTestimonials([]);
         }
       } finally {
-        if (!signal?.aborted) setTestimonialsLoading(false);
+        if (!signal?.aborted && !silent) setTestimonialsLoading(false);
       }
     },
     []
@@ -1103,13 +1179,14 @@ function AdminDashboardContent() {
 
   useEffect(() => {
     const id = window.setInterval(() => {
-      loadAppointments();
-      loadGiftCards();
-      loadTestimonials();
-      loadBlockedSlots();
+      loadAppointments(undefined, true);
+      loadGiftCards(undefined, true);
+      loadTestimonials(undefined, true);
+      loadBlockedSlots(undefined, true);
+      loadBusinessHours(undefined, true);
     }, AUTO_REFRESH_MS);
     return () => window.clearInterval(id);
-  }, [loadAppointments, loadGiftCards, loadTestimonials, loadBlockedSlots]);
+  }, [loadAppointments, loadGiftCards, loadTestimonials, loadBlockedSlots, loadBusinessHours]);
 
   const handleOpenEdit = (appointment: AdminAppointment) => {
     setEditing(appointment);
@@ -1118,6 +1195,10 @@ function AdminDashboardContent() {
       time: appointment.time,
       status: appointment.status,
       service: appointment.service,
+      location: appointment.location,
+      clientName: appointment.clientName,
+      patientPhone: appointment.patientPhone ?? '',
+      patientEmail: appointment.patientEmail ?? '',
     });
   };
 
@@ -1139,6 +1220,10 @@ function AdminDashboardContent() {
           appointmentDate: editValues.date,
           appointmentTime: editValues.time,
           status: toApiStatus(editValues.status),
+          ...(editValues.location.trim() ? { location: editValues.location.trim() } : {}),
+          ...(editValues.clientName.trim() ? { patientName: editValues.clientName.trim() } : {}),
+          ...(editValues.patientPhone.trim() ? { patientPhone: editValues.patientPhone.trim() } : {}),
+          ...(editValues.patientEmail.trim() ? { patientEmail: editValues.patientEmail.trim() } : {}),
         }),
       });
       if (!response.ok) {
@@ -3103,7 +3188,7 @@ function AdminDashboardContent() {
         </Stack>
       </Container>
 
-      <Dialog open={rangeBlockOpen} onClose={() => setRangeBlockOpen(false)} fullWidth maxWidth="xs">
+      <Dialog open={rangeBlockOpen} onClose={() => setRangeBlockOpen(false)} fullWidth maxWidth="xs" disableScrollLock>
         <DialogTitle>Bloquear fechas</DialogTitle>
         <DialogContent sx={{ display: 'grid', gap: 2, mt: 1 }}>
           {rangeNotice && (
@@ -3206,7 +3291,7 @@ function AdminDashboardContent() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={timeBlockOpen} onClose={() => setTimeBlockOpen(false)} fullWidth maxWidth="xs">
+      <Dialog open={timeBlockOpen} onClose={() => setTimeBlockOpen(false)} fullWidth maxWidth="xs" disableScrollLock>
         <DialogTitle>Bloquear franja horaria</DialogTitle>
         <DialogContent sx={{ display: 'grid', gap: 2, mt: 1 }}>
           {rangeNotice && (
@@ -3277,7 +3362,7 @@ function AdminDashboardContent() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="sm">
+      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="sm" disableScrollLock>
         <DialogTitle>Agendar turno</DialogTitle>
         <DialogContent sx={{ display: 'grid', gap: 2, pt: 2.5, overflow: 'visible' }}>
           <TextField
@@ -3406,28 +3491,42 @@ function AdminDashboardContent() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={Boolean(editing)} onClose={() => setEditing(null)} fullWidth maxWidth="sm">
+      <Dialog open={Boolean(editing)} onClose={() => setEditing(null)} fullWidth maxWidth="sm" disableScrollLock>
         <DialogTitle>Editar turno</DialogTitle>
           <DialogContent sx={{ display: 'grid', gap: 2, pt: 2.5, overflow: 'visible' }}>
-            <TextField label="Fecha" type="date" value={editValues.date} onChange={(event) => setEditValues((prev) => ({ ...prev, date: event.target.value }))} InputLabelProps={{ shrink: true }} />
-          <TextField label="Hora" type="time" value={editValues.time} onChange={(event) => setEditValues((prev) => ({ ...prev, time: event.target.value }))} InputLabelProps={{ shrink: true }} />
-          <TextField
-            select
-            label="Estado"
-            value={editValues.status}
-            onChange={(event) =>
-              setEditValues((prev) => ({
-                ...prev,
-                status: event.target.value as AdminStatus,
-              }))
-            }
-          >
-            {['Pendiente', 'Confirmado', 'Reprogramado', 'Cancelado', 'Completado', 'No asistio'].map((status) => (
-              <MenuItem key={status} value={status}>
-                {formatAdminStatusLabel(status as AdminStatus)}
-              </MenuItem>
-            ))}
-          </TextField>
+            <TextField label="Nombre del paciente" value={editValues.clientName} onChange={(event) => setEditValues((prev) => ({ ...prev, clientName: event.target.value }))} />
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+              <TextField label="Teléfono (opcional)" value={editValues.patientPhone} onChange={(event) => setEditValues((prev) => ({ ...prev, patientPhone: event.target.value }))} />
+              <TextField label="Email (opcional)" type="email" value={editValues.patientEmail} onChange={(event) => setEditValues((prev) => ({ ...prev, patientEmail: event.target.value }))} />
+            </Box>
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
+              <TextField label="Fecha" type="date" value={editValues.date} onChange={(event) => setEditValues((prev) => ({ ...prev, date: event.target.value }))} InputLabelProps={{ shrink: true }} />
+              <TextField label="Hora" type="time" value={editValues.time} onChange={(event) => setEditValues((prev) => ({ ...prev, time: event.target.value }))} InputLabelProps={{ shrink: true }} />
+            </Box>
+            <Autocomplete
+              freeSolo
+              options={locationOptions.filter((l) => l !== 'Todas')}
+              value={editValues.location}
+              onInputChange={(_event, value) => setEditValues((prev) => ({ ...prev, location: value }))}
+              renderInput={(params) => <TextField {...params} label="Ubicación" />}
+            />
+            <TextField
+              select
+              label="Estado"
+              value={editValues.status}
+              onChange={(event) =>
+                setEditValues((prev) => ({
+                  ...prev,
+                  status: event.target.value as AdminStatus,
+                }))
+              }
+            >
+              {['Pendiente', 'Confirmado', 'Reprogramado', 'Cancelado', 'Completado', 'No asistio'].map((status) => (
+                <MenuItem key={status} value={status}>
+                  {formatAdminStatusLabel(status as AdminStatus)}
+                </MenuItem>
+              ))}
+            </TextField>
         </DialogContent>
         <DialogActions sx={{ p: 3, gap: 1 }}>
           {editing && (
@@ -3443,7 +3542,7 @@ function AdminDashboardContent() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={Boolean(cancelTargetId)} onClose={handleCloseCancel} fullWidth maxWidth="xs">
+      <Dialog open={Boolean(cancelTargetId)} onClose={handleCloseCancel} fullWidth maxWidth="xs" disableScrollLock>
         <DialogTitle>Eliminar turno</DialogTitle>
         <DialogContent>
           <Typography sx={{ color: '#6B6B6B' }}>
@@ -3478,7 +3577,7 @@ function AdminDashboardContent() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={redeemOpen} onClose={handleCloseRedeem} fullWidth maxWidth="xs">
+      <Dialog open={redeemOpen} onClose={handleCloseRedeem} fullWidth maxWidth="xs" disableScrollLock>
         <DialogTitle>Canjear Gift Card</DialogTitle>
         <DialogContent sx={{ display: 'grid', gap: 2, mt: 1 }}>
           <Typography sx={{ color: '#6B6B6B', fontSize: '0.9rem' }}>

@@ -285,7 +285,7 @@ export function ReviewFloatingButton() {
         </Fab>
       </Tooltip>
 
-      <Dialog open={open} onClose={handleClose} fullWidth maxWidth="xs">
+      <Dialog open={open} onClose={handleClose} fullWidth maxWidth="xs" disableScrollLock>
         <DialogTitle>Dejar reseña</DialogTitle>
         <DialogContent sx={{ display: 'grid', gap: 2, pt: 4, overflow: 'visible' }}>
           <TextField

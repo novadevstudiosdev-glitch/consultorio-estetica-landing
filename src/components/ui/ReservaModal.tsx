@@ -27,6 +27,7 @@ import dayjs, { Dayjs } from 'dayjs';
 import 'dayjs/locale/es';
 import { useCallback, useEffect, useState } from 'react';
 import { LOCATIONS, LocationKey, getAvailableDaysLabel, isDateAvailable } from '@/lib/booking';
+import { useScrollLock } from '@/hooks/useScrollLock';
 
 type ServiceOption = {
   id: string;
@@ -68,6 +69,7 @@ const readStoredUser = (): StoredUser | null => {
 export function ReservaModal() {
   dayjs.locale('es');
   const [open, setOpen] = useState(false);
+  useScrollLock(open);
   const [selectedLocation, setSelectedLocation] = useState<LocationKey | null>(null);
   const [selectedDate, setSelectedDate] = useState('');
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
@@ -904,6 +906,7 @@ export function ReservaModal() {
       onClose={handleClose}
       TransitionComponent={Grow}
       TransitionProps={{ timeout: 250 }}
+      disableScrollLock
       fullWidth
       maxWidth="sm"
       BackdropProps={{
@@ -1240,6 +1243,7 @@ export function ReservaModal() {
       <Dialog
         open={paymentConfirmOpen}
         onClose={() => setPaymentConfirmOpen(false)}
+        disableScrollLock
         fullWidth
         maxWidth="xs"
       >

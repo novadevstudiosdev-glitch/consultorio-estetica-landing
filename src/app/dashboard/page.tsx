@@ -526,7 +526,7 @@ function DashboardContent() {
         </Stack>
       </Container>
 
-      <Dialog open={rescheduleOpen} onClose={() => setRescheduleOpen(false)} fullWidth maxWidth="xs">
+      <Dialog open={rescheduleOpen} onClose={() => setRescheduleOpen(false)} fullWidth maxWidth="xs" disableScrollLock>
         <DialogTitle>Reprogramar turno</DialogTitle>
         <DialogContent sx={{ display: 'grid', gap: 2, mt: 1 }}>
           <TextField
@@ -552,7 +552,7 @@ function DashboardContent() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={Boolean(cancelTargetId)} onClose={handleCloseCancel} fullWidth maxWidth="xs">
+      <Dialog open={Boolean(cancelTargetId)} onClose={handleCloseCancel} fullWidth maxWidth="xs" disableScrollLock>
         <DialogTitle>Eliminar turno</DialogTitle>
         <DialogContent>
           <Typography sx={{ color: '#6B6B6B' }}>

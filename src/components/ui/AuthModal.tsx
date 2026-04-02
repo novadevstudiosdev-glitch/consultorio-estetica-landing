@@ -21,6 +21,7 @@ import VisibilityIcon from '@mui/icons-material/Visibility';
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useScrollLock } from '@/hooks/useScrollLock';
 
 type AuthModalProps = {
   open: boolean;
@@ -87,6 +88,7 @@ const GoogleLogo = () => (
 );
 
 export function AuthModal({ open, onClose, tab, onTabChange }: AuthModalProps) {
+  useScrollLock(open);
   const router = useRouter();
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -635,6 +637,7 @@ export function AuthModal({ open, onClose, tab, onTabChange }: AuthModalProps) {
         onClose={onClose}
         TransitionComponent={Grow}
         TransitionProps={{ timeout: 220 }}
+        disableScrollLock
         fullWidth
         maxWidth="xs"
         BackdropProps={{
