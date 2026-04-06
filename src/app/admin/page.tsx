@@ -717,16 +717,21 @@ function AdminDashboardContent() {
   const todayKey = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const locationOptions = useMemo(() => {
-    const seen = new Map<string, string>();
+    const defaultLocations = new Map<string, string>();
+    // Always include default locations
+    defaultLocations.set('rosario', 'Rosario');
+    defaultLocations.set('correa', 'Correa');
+    
+    // Add any additional locations from appointments
     for (const appt of appointments) {
       if (appt.location) {
         const key = appt.location.toLowerCase();
-        if (!seen.has(key)) {
-          seen.set(key, appt.location.charAt(0).toUpperCase() + appt.location.slice(1).toLowerCase());
+        if (!defaultLocations.has(key)) {
+          defaultLocations.set(key, appt.location.charAt(0).toUpperCase() + appt.location.slice(1).toLowerCase());
         }
       }
     }
-    return ['Todas', ...Array.from(seen.values())];
+    return ['Todas', ...Array.from(defaultLocations.values())];
   }, [appointments]);
 
   const filteredAppointments = useMemo(() => {
@@ -3475,12 +3480,21 @@ function AdminDashboardContent() {
               inputProps={{ min: 10, step: 10 }}
             />
             <TextField
-              label="Ubicación"
+              select
+              label="Sede"
               value={createValues.location}
               onChange={(event) =>
                 setCreateValues((prev) => ({ ...prev, location: event.target.value }))
               }
-            />
+            >
+              {locationOptions
+                .filter((loc) => loc !== 'Todas')
+                .map((location) => (
+                  <MenuItem key={location} value={location}>
+                    {location}
+                  </MenuItem>
+                ))}
+            </TextField>
           </Box>
           <TextField
             select
