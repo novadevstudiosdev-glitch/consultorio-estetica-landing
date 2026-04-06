@@ -604,10 +604,10 @@ function AdminDashboardContent() {
       const mins = minutes % 60;
       slots.add(`${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`);
     }
-    // Include appointment times that fall outside configured business hours
+    // Include non-cancelled appointment times that fall outside configured business hours
     const isoDate = selectedDate.toISOString().slice(0, 10);
     for (const appt of appointments) {
-      if (appt.date === isoDate && appt.time) {
+      if (appt.date === isoDate && appt.time && appt.status !== 'Cancelado') {
         slots.add(appt.time.slice(0, 5));
       }
     }
@@ -711,7 +711,7 @@ function AdminDashboardContent() {
 
   const getAppointmentsForDay = (date: Date) => {
     const dateKey = date.toISOString().slice(0, 10);
-    return appointments.filter((appt) => appt.date === dateKey);
+    return appointments.filter((appt) => appt.date === dateKey && appt.status !== 'Cancelado');
   };
 
   const todayKey = useMemo(() => new Date().toISOString().slice(0, 10), []);
