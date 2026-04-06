@@ -100,6 +100,26 @@ const businessHoursUrl = `${apiBaseUrl.replace(/\/$/, '')}/api/business-hours`;
 
 const DAY_OF_WEEK = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
+const formatLocalDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const normalizeDateKey = (value: unknown) => {
+  if (!value) return '';
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? '' : formatLocalDate(value);
+  }
+  const raw = String(value).trim();
+  if (!raw) return '';
+  const directMatch = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (directMatch?.[1]) return directMatch[1];
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? '' : formatLocalDate(parsed);
+};
+
 const timeToMinutes = (time: string) => {
   const [h, m] = time.split(':').map(Number);
   return h * 60 + (m ?? 0);
@@ -185,20 +205,18 @@ const resolveDateTime = (raw: ApiAppointment) => {
   const rawTime = (raw.appointmentTime as string | undefined) ?? (raw.time as string | undefined) ?? (raw.startTime as string | undefined);
 
   if (rawDate) {
-    const parsed = new Date(rawDate);
-    if (!Number.isNaN(parsed.getTime())) {
-      const iso = parsed.toISOString();
-      return {
-        date: iso.slice(0, 10),
-        time: rawTime ? rawTime.slice(0, 5) : iso.slice(11, 16),
-      };
-    }
+    const date = normalizeDateKey(rawDate);
     if (rawTime) {
-      return { date: rawDate.slice(0, 10), time: rawTime.slice(0, 5) };
+      return { date, time: rawTime.slice(0, 5) };
     }
     if (rawDate.includes('T')) {
-      return { date: rawDate.slice(0, 10), time: rawDate.slice(11, 16) };
+      return { date, time: rawDate.slice(11, 16) };
     }
+    const parsed = new Date(rawDate);
+    if (!Number.isNaN(parsed.getTime())) {
+      return { date, time: `${String(parsed.getHours()).padStart(2, '0')}:${String(parsed.getMinutes()).padStart(2, '0')}` };
+    }
+    return { date, time: '' };
   }
 
   return { date: '', time: '' };
@@ -219,7 +237,7 @@ const normalizeAppointment = (raw: ApiAppointment, index: number): AdminAppointm
     clientName: clientValue,
     service: serviceValue,
     location: locationValue,
-    date: date || new Date().toISOString().slice(0, 10),
+    date: date || formatLocalDate(new Date()),
     time: time || '09:00',
     status: normalizeStatus(raw.status),
     durationMinutes: (raw.durationMinutes as number | undefined) ?? (raw.duration as number | undefined) ?? (raw.durationMin as number | undefined) ?? (raw.service as { durationMinutes?: number } | undefined)?.durationMinutes,
@@ -240,8 +258,7 @@ const normalizeBlockedSlot = (raw: ApiBlockedSlot, index: number): BlockedSlot =
     (raw.blocked_date as string | undefined) ??
     (raw.date as string | undefined) ??
     '';
-  const dateString = String(rawDateValue ?? '');
-  const normalizedDate = dateString ? (dateString.includes('T') ? dateString.slice(0, 10) : dateString.slice(0, 10)) : '';
+  const normalizedDate = normalizeDateKey(rawDateValue);
   return {
     id,
     blockedDate: normalizedDate,
@@ -581,7 +598,7 @@ function AdminDashboardContent() {
       }
     } catch {
       if (!signal?.aborted && !silent) {
-        // silently fail — timeSlots fallback to hardcoded defaults
+        // silently fail — selected-day slots fallback to hardcoded defaults
       }
     }
   }, []);
@@ -592,7 +609,7 @@ function AdminDashboardContent() {
     return () => controller.abort();
   }, [loadBusinessHours]);
 
-  const timeSlots = useMemo(() => {
+  const timeSlotsForSelectedDay = useMemo(() => {
     const dayName = DAY_OF_WEEK[selectedDate.getDay()];
     const bh = businessHours.find((h) => h.dayOfWeek === dayName && h.isActive);
     const startMinutes = bh ? timeToMinutes(bh.openTime) : 9 * 60;
@@ -605,9 +622,9 @@ function AdminDashboardContent() {
       slots.add(`${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`);
     }
     // Include non-cancelled appointment times that fall outside configured business hours
-    const isoDate = selectedDate.toISOString().slice(0, 10);
+    const selectedDateKey = formatLocalDate(selectedDate);
     for (const appt of appointments) {
-      if (appt.date === isoDate && appt.time && appt.status !== 'Cancelado') {
+      if (appt.date === selectedDateKey && appt.time && appt.status !== 'Cancelado') {
         slots.add(appt.time.slice(0, 5));
       }
     }
@@ -650,7 +667,7 @@ function AdminDashboardContent() {
 
   const isSameMonth = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
 
-  const toIsoDate = (date: Date) => date.toISOString().slice(0, 10);
+  const toLocalDateKey = (date: Date) => formatLocalDate(date);
 
   function parseIsoDate(value: string) {
     const parsed = new Date(`${value}T00:00:00`);
@@ -670,7 +687,7 @@ function AdminDashboardContent() {
   };
 
   const getBlockedSlotsForDate = (date: Date) => {
-    const dateKey = date.toISOString().slice(0, 10);
+    const dateKey = formatLocalDate(date);
     return blockedSlots.filter((slot) => slot.blockedDate === dateKey && slot.isActive !== false);
   };
 
@@ -698,7 +715,7 @@ function AdminDashboardContent() {
   const hasSelectedDayPartialBlock = !isSelectedDayFullyBlocked && selectedDayBlocks.length > 0;
 
   const getAppointmentForSlot = (date: Date, time: string) => {
-    const dateKey = date.toISOString().slice(0, 10);
+    const dateKey = formatLocalDate(date);
     const slotMinutes = parseTimeToMinutes(time);
     return appointments.find((appt) => {
       if (appt.date !== dateKey) return false;
@@ -709,12 +726,18 @@ function AdminDashboardContent() {
     });
   };
 
-  const getAppointmentsForDay = (date: Date) => {
-    const dateKey = date.toISOString().slice(0, 10);
-    return appointments.filter((appt) => appt.date === dateKey && appt.status !== 'Cancelado');
-  };
+  const occupiedCountByDate = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const appt of appointments) {
+      if (appt.status === 'Cancelado') continue;
+      const dateKey = normalizeDateKey(appt.date);
+      if (!dateKey) continue;
+      counts[dateKey] = (counts[dateKey] ?? 0) + 1;
+    }
+    return counts;
+  }, [appointments]);
 
-  const todayKey = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const todayKey = useMemo(() => formatLocalDate(new Date()), []);
 
   const locationOptions = useMemo(() => {
     const defaultLocations = new Map<string, string>();
@@ -956,7 +979,11 @@ function AdminDashboardContent() {
           }
           return;
         }
-        const response = await fetch(appointmentsUrl, {
+        const query = new URLSearchParams({
+          page: '1',
+          limit: '500',
+        }).toString();
+        const response = await fetch(`${appointmentsUrl}?${query}`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -1399,9 +1426,9 @@ function AdminDashboardContent() {
   };
 
   const handleOpenCreate = () => {
-    const dateIso = toIsoDate(selectedDate);
+    const dateIso = toLocalDateKey(selectedDate);
     const firstFreeTime =
-      timeSlots.find((time) => !getAppointmentForSlot(selectedDate, time) && !isSlotBlocked(selectedDate, time)) ?? '09:00';
+      timeSlotsForSelectedDay.find((time) => !getAppointmentForSlot(selectedDate, time) && !isSlotBlocked(selectedDate, time)) ?? '09:00';
     const defaultService = services[0];
     setCreateValues({
       clientName: '',
@@ -1420,7 +1447,7 @@ function AdminDashboardContent() {
   };
 
   const handleOpenCreateFromSlot = (date: Date, time: string) => {
-    const dateIso = toIsoDate(date);
+    const dateIso = toLocalDateKey(date);
     const defaultService = services[0];
     setCreateValues({
       clientName: '',
@@ -1536,7 +1563,18 @@ function AdminDashboardContent() {
         return;
       }
 
-      const createdId = String((createParsed as { id?: string }).id ?? '').trim();
+      const createData = (createParsed as { data?: unknown })?.data;
+      const createPayload = Array.isArray(createData)
+        ? createData[0]
+        : createData ?? createParsed;
+      const createdId =
+        createPayload && typeof createPayload === 'object'
+          ? String((createPayload as { id?: string }).id ?? '').trim()
+          : '';
+      let createdAppointment =
+        createPayload && typeof createPayload === 'object'
+          ? normalizeAppointment(createPayload as ApiAppointment, 0)
+          : null;
       if (createdId && createValues.status !== 'Confirmado') {
         const patchResponse = await fetch(appointmentsUrl + '/' + createdId, {
           method: 'PATCH',
@@ -1550,10 +1588,41 @@ function AdminDashboardContent() {
         });
         if (!patchResponse.ok) {
           setError('El turno se creo, pero no se pudo actualizar el estado seleccionado.');
+        } else if (createdAppointment) {
+          createdAppointment = { ...createdAppointment, status: createValues.status };
         }
       }
 
-      await loadAppointments();
+      if (createdAppointment) {
+        setAppointments((prev) => [
+          createdAppointment as AdminAppointment,
+          ...prev.filter((appt) => appt.id !== createdAppointment?.id),
+        ]);
+        const parsedCreatedDate = parseIsoDate(createdAppointment.date);
+        if (parsedCreatedDate) {
+          setSelectedDate(parsedCreatedDate);
+        }
+
+        const normalizedSearch = searchTerm.trim().toLowerCase();
+        const matchesSearch =
+          !normalizedSearch ||
+          [createdAppointment.clientName, createdAppointment.service, createdAppointment.location]
+            .join(' ')
+            .toLowerCase()
+            .includes(normalizedSearch);
+        const matchesStatus =
+          statusFilter === 'Todos' || createdAppointment.status === statusFilter;
+        const matchesLocation =
+          locationFilter === 'Todas' || createdAppointment.location === locationFilter;
+        if (!matchesSearch || !matchesStatus || !matchesLocation) {
+          setSearchTerm('');
+          setStatusFilter('Todos');
+          setLocationFilter('Todas');
+        }
+        setAppointmentPage(1);
+      }
+
+      void loadAppointments(undefined, true);
       setCreateOpen(false);
     } catch {
       setCreateError('No se pudo crear el turno. Intenta nuevamente.');
@@ -1600,7 +1669,7 @@ function AdminDashboardContent() {
     setRangeNotice(null);
     setRangeReason('');
     setRangeType('other');
-    const todayIso = toIsoDate(selectedDate);
+    const todayIso = toLocalDateKey(selectedDate);
     setRangeStartDate(todayIso);
     setRangeEndDate(todayIso);
     setRangeBlockOpen(true);
@@ -1638,8 +1707,8 @@ function AdminDashboardContent() {
     }
     const normalizedStart = endDate < startDate ? endDate : startDate;
     const normalizedEnd = endDate < startDate ? startDate : endDate;
-    const startIso = toIsoDate(normalizedStart);
-    const endIso = toIsoDate(normalizedEnd);
+    const startIso = toLocalDateKey(normalizedStart);
+    const endIso = toLocalDateKey(normalizedEnd);
     const token = typeof window !== 'undefined' ? localStorage.getItem('turnera_access_token') : null;
     if (!token) {
       setRangeNotice('Necesitas iniciar sesión como admin para bloquear fechas.');
@@ -1703,10 +1772,10 @@ function AdminDashboardContent() {
     setRangeNotice(null);
     setTimeBlockReason('');
     setTimeBlockType('other');
-    const dateIso = toIsoDate(selectedDate);
+    const dateIso = toLocalDateKey(selectedDate);
     setTimeBlockDate(dateIso);
-    const defaultStart = timeSlots[0] ?? '09:00';
-    const defaultEnd = timeSlots[1] ?? '09:30';
+    const defaultStart = timeSlotsForSelectedDay[0] ?? '09:00';
+    const defaultEnd = timeSlotsForSelectedDay[1] ?? '09:30';
     setTimeBlockStart(defaultStart);
     setTimeBlockEnd(defaultEnd);
     setTimeBlockOpen(true);
@@ -3015,8 +3084,9 @@ function AdminDashboardContent() {
 
                       <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))' }}>
                         {monthDays.map((day) => {
-                          const appointmentsForDay = getAppointmentsForDay(day);
-                          const occupiedSlots = timeSlots.filter((slot) => getAppointmentForSlot(day, slot)).length;
+                          const dayKey = formatLocalDate(day);
+                          const appointmentsForDayCount = occupiedCountByDate[dayKey] ?? 0;
+                          const occupiedSlots = appointmentsForDayCount;
                           const isInMonth = isSameMonth(day, monthStart);
                           const isSelected = isSameDay(day, selectedDate);
                           const isDarkerPinkWeekday = DARKER_PINK_WEEKDAYS.has(day.getDay());
@@ -3063,9 +3133,9 @@ function AdminDashboardContent() {
                                   <Typography sx={{ fontSize: '0.78rem', color: '#9C6B6B', fontWeight: 600 }}>
                                     Bloqueada
                                   </Typography>
-                                  {appointmentsForDay.length > 0 ? (
+                                  {appointmentsForDayCount > 0 ? (
                                     <Typography sx={{ fontSize: '0.75rem', color: '#8B6B6B' }}>
-                                      {appointmentsForDay.length} turnos
+                                      {appointmentsForDayCount} turnos
                                     </Typography>
                                   ) : null}
                                 </Stack>
@@ -3074,15 +3144,15 @@ function AdminDashboardContent() {
                                   <Typography sx={{ fontSize: '0.78rem', color: '#9C6B6B', fontWeight: 600 }}>
                                     Bloqueos parciales
                                   </Typography>
-                                  {appointmentsForDay.length > 0 ? (
+                                  {appointmentsForDayCount > 0 ? (
                                     <Typography sx={{ fontSize: '0.75rem', color: '#8B6B6B' }}>
-                                      {appointmentsForDay.length} turnos
+                                      {appointmentsForDayCount} turnos
                                     </Typography>
                                   ) : null}
                                 </Stack>
-                              ) : appointmentsForDay.length > 0 ? (
+                              ) : appointmentsForDayCount > 0 ? (
                                 <Stack spacing={0.5}>
-                                  <Typography sx={{ fontSize: '0.78rem', color: '#6B6B6B' }}>{appointmentsForDay.length} turnos</Typography>
+                                  <Typography sx={{ fontSize: '0.78rem', color: '#6B6B6B' }}>{appointmentsForDayCount} turnos</Typography>
                                   <Typography sx={{ fontSize: '0.75rem', color: '#8B6B6B' }}>Ocupados: {occupiedSlots}</Typography>
                                 </Stack>
                               ) : (
@@ -3149,7 +3219,7 @@ function AdminDashboardContent() {
                       )}
 
                       <Stack spacing={1.2}>
-                        {timeSlots.map((time) => {
+                        {timeSlotsForSelectedDay.map((time) => {
                           const appointment = getAppointmentForSlot(selectedDate, time);
                           const isBlockedSlot = !appointment && isSlotBlocked(selectedDate, time);
                           const outsideHours = isOutsideBusinessHours(time);
@@ -3288,8 +3358,8 @@ function AdminDashboardContent() {
               variant="outlined"
               onClick={() => {
                 const { start, end } = getWeekRange(selectedDate);
-                setRangeStartDate(toIsoDate(start));
-                setRangeEndDate(toIsoDate(end));
+                setRangeStartDate(toLocalDateKey(start));
+                setRangeEndDate(toLocalDateKey(end));
               }}
               sx={{ textTransform: 'none' }}
             >
@@ -3301,8 +3371,8 @@ function AdminDashboardContent() {
                 const base = new Date();
                 const start = new Date(base.getFullYear(), base.getMonth(), 1);
                 const end = new Date(base.getFullYear(), base.getMonth() + 1, 0);
-                setRangeStartDate(toIsoDate(start));
-                setRangeEndDate(toIsoDate(end));
+                setRangeStartDate(toLocalDateKey(start));
+                setRangeEndDate(toLocalDateKey(end));
               }}
               sx={{ textTransform: 'none' }}
             >
