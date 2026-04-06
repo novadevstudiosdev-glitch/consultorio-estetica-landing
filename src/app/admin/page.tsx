@@ -702,6 +702,7 @@ function AdminDashboardContent() {
     const slotMinutes = parseTimeToMinutes(time);
     return appointments.find((appt) => {
       if (appt.date !== dateKey) return false;
+      if (appt.status === 'Cancelado') return false;
       const startMinutes = parseTimeToMinutes(appt.time);
       const duration = appt.durationMinutes ?? 30;
       return slotMinutes >= startMinutes && slotMinutes < startMinutes + duration;
@@ -1494,9 +1495,6 @@ function AdminDashboardContent() {
 
       setCreateSubmitting(true);
       const notesParts: string[] = [];
-      if (createValues.location.trim()) {
-        notesParts.push('Sede: ' + createValues.location.trim());
-      }
 
       const createResponse = await fetch(appointmentsUrl + '/admin', {
         method: 'POST',
@@ -1512,6 +1510,7 @@ function AdminDashboardContent() {
           patientPhone: trimmedPhone || undefined,
           patientEmail: trimmedEmail || undefined,
           patientNotes: notesParts.length > 0 ? notesParts.join(' | ') : undefined,
+          location: createValues.location.trim() || undefined,
         }),
       });
       const createRawText = await createResponse.text();
